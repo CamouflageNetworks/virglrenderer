@@ -160,6 +160,10 @@ struct virgl_renderer_callbacks {
 #define VIRGL_RENDERER_USE_VIDEO     (1 << 11)
 
 
+/* Enable APIR trampoline.
+ */
+#define VIRGL_RENDERER_APIR         (1 << 12)
+
 #endif /* VIRGL_RENDERER_UNSTABLE_APIS */
 
 

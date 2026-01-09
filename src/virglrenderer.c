@@ -192,6 +192,10 @@ void virgl_renderer_fill_caps(uint32_t set, uint32_t version,
       else if (state.vkr_initialized)
          vkr_get_capset(caps, state.flags);
       break;
+   case VIRTGPU_DRM_CAPSET_APIR:
+      if (state.proxy_initialized)
+         proxy_get_capset(set, caps);
+      break;
    case VIRTGPU_DRM_CAPSET_DRM:
       if (state.drm_initialized)
          drm_renderer_capset(caps);
@@ -247,6 +251,11 @@ int virgl_renderer_context_create_with_flags(uint32_t ctx_id,
       if (!state.vrend_initialized)
          return EINVAL;
       ctx = vrend_renderer_context_create(ctx_id, nlen, name);
+      break;
+   case VIRTGPU_DRM_CAPSET_APIR:
+      if (!state.proxy_initialized)
+         return EINVAL;
+      ctx = proxy_context_create(ctx_id, ctx_flags, nlen, name);
       break;
    case VIRTGPU_DRM_CAPSET_VENUS:
       if (state.proxy_initialized) {
@@ -583,6 +592,10 @@ void virgl_renderer_get_cap_set(uint32_t cap_set, uint32_t *max_ver,
    case VIRTGPU_DRM_CAPSET_VIRGL:
    case VIRTGPU_DRM_CAPSET_VIRGL2:
       vrend_renderer_get_cap_set(cap_set, max_ver, max_size);
+      break;
+   case VIRTGPU_DRM_CAPSET_APIR:
+      *max_ver = 0;
+      *max_size = proxy_get_capset(cap_set, NULL);
       break;
    case VIRTGPU_DRM_CAPSET_VENUS:
       *max_ver = 0;
@@ -1086,7 +1099,11 @@ int virgl_renderer_init(void *cookie, int flags, struct virgl_renderer_callbacks
    }
 
    if (!state.proxy_initialized && (flags & VIRGL_RENDERER_RENDER_SERVER)) {
-      ret = proxy_renderer_init(&proxy_cbs, flags | VIRGL_RENDERER_NO_VIRGL);
+      ret = proxy_renderer_init(&proxy_cbs, flags | VIRGL_RENDERER_NO_VIRGL
+#ifdef ENABLE_APIR
+                                | VIRGL_RENDERER_APIR
+#endif
+         );
       if (ret) {
          virgl_error("failed to initialize venus renderer");
          goto fail;
