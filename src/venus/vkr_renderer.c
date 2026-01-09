@@ -11,6 +11,10 @@
 
 #include "vkr_context.h"
 
+#ifdef ENABLE_APIR
+#include "apir/apir-renderer.h" // for the APIR/VENUS TRANSITION
+#endif
+
 struct vkr_renderer_state {
    const struct vkr_renderer_callbacks *cbs;
 
@@ -23,6 +27,11 @@ struct vkr_renderer_state vkr_state;
 size_t
 vkr_get_capset(void *capset, uint32_t flags)
 {
+#ifdef ENABLE_APIR
+   if (use_apir_backend_instead_of_vk()) {
+      return apir_renderer_get_capset(capset, flags);
+   }
+#endif
    struct virgl_renderer_capset_venus *c = capset;
    if (c) {
       memset(c, 0, sizeof(*c));
@@ -62,7 +71,12 @@ vkr_renderer_init(uint32_t flags, const struct vkr_renderer_callbacks *cbs)
 {
    TRACE_INIT();
    TRACE_FUNC();
-
+#ifdef ENABLE_APIR
+   // TRANSITION Venus -> APIR
+   if (use_apir_backend_instead_of_vk()) {
+      return apir_renderer_init();
+   }
+#endif
    static const uint32_t required_flags =
       VKR_RENDERER_THREAD_SYNC | VKR_RENDERER_ASYNC_FENCE_CB;
    if ((flags & required_flags) != required_flags)
@@ -80,6 +94,13 @@ vkr_renderer_init(uint32_t flags, const struct vkr_renderer_callbacks *cbs)
 void
 vkr_renderer_fini(void)
 {
+#ifdef ENABLE_APIR
+   // TRANSITION Venus -> APIR
+   if (use_apir_backend_instead_of_vk()) {
+      apir_renderer_fini();
+      return;
+   }
+#endif
    list_for_each_entry_safe (struct vkr_context, ctx, &vkr_state.contexts, head)
       vkr_context_destroy(ctx);
 
@@ -106,7 +127,12 @@ vkr_renderer_create_context(uint32_t ctx_id,
                             const char *name)
 {
    TRACE_FUNC();
-
+#ifdef ENABLE_APIR
+   // TRANSITION Venus -> APIR
+   if (use_apir_backend_instead_of_vk()) {
+      return apir_renderer_create_context(ctx_id, ctx_flags, nlen, name);
+   }
+#endif
    assert(ctx_id);
    assert(!(ctx_flags & ~VIRGL_RENDERER_CONTEXT_FLAG_CAPSET_ID_MASK));
 
@@ -132,7 +158,13 @@ void
 vkr_renderer_destroy_context(uint32_t ctx_id)
 {
    TRACE_FUNC();
-
+#ifdef ENABLE_APIR
+   // TRANSITION Venus -> APIR
+   if (use_apir_backend_instead_of_vk()) {
+      apir_renderer_destroy_context(ctx_id);
+      return;
+   }
+#endif
    struct vkr_context *ctx = vkr_renderer_lookup_context(ctx_id);
    if (!ctx)
       return;
@@ -145,7 +177,12 @@ bool
 vkr_renderer_submit_cmd(uint32_t ctx_id, void *cmd, uint32_t size)
 {
    TRACE_FUNC();
-
+#ifdef ENABLE_APIR
+   // TRANSITION Venus -> APIR
+   if (use_apir_backend_instead_of_vk()) {
+      return apir_renderer_submit_cmd(ctx_id, cmd, size);
+   }
+#endif
    struct vkr_context *ctx = vkr_renderer_lookup_context(ctx_id);
    if (!ctx)
       return false;
@@ -160,7 +197,12 @@ vkr_renderer_submit_fence(uint32_t ctx_id,
                           uint64_t fence_id)
 {
    TRACE_FUNC();
-
+#ifdef ENABLE_APIR
+   // TRANSITION Venus -> APIR
+   if (use_apir_backend_instead_of_vk()) {
+      return apir_renderer_submit_fence(ctx_id, flags, ring_idx, fence_id);
+   }
+#endif
    struct vkr_context *ctx = vkr_renderer_lookup_context(ctx_id);
    if (!ctx)
       return false;
@@ -181,7 +223,13 @@ vkr_renderer_create_resource(uint32_t ctx_id,
                              struct virgl_resource_vulkan_info *out_vulkan_info)
 {
    TRACE_FUNC();
-
+#ifdef ENABLE_APIR
+   // TRANSITION Venus -> APIR
+   if (use_apir_backend_instead_of_vk()) {
+      return apir_renderer_create_resource(ctx_id, res_id, blob_id, blob_size, blob_flags,
+                                           out_fd_type, out_res_fd, out_map_info, out_vulkan_info);
+   }
+#endif
    assert(res_id);
    assert(blob_size);
 
@@ -216,7 +264,12 @@ vkr_renderer_import_resource(uint32_t ctx_id,
                              uint64_t size)
 {
    TRACE_FUNC();
-
+#ifdef ENABLE_APIR
+   // TRANSITION Venus -> APIR
+   if (use_apir_backend_instead_of_vk()) {
+      return apir_renderer_import_resource(ctx_id, res_id, fd_type, fd, size);
+   }
+#endif
    assert(res_id);
    assert(fd_type == VIRGL_RESOURCE_FD_DMABUF || fd_type == VIRGL_RESOURCE_FD_OPAQUE);
    assert(fd >= 0);
@@ -233,7 +286,13 @@ void
 vkr_renderer_destroy_resource(uint32_t ctx_id, uint32_t res_id)
 {
    TRACE_FUNC();
-
+#ifdef ENABLE_APIR
+   // TRANSITION Venus -> APIR
+   if (use_apir_backend_instead_of_vk()) {
+      apir_renderer_destroy_resource(ctx_id, res_id);
+      return;
+   }
+#endif
    struct vkr_context *ctx = vkr_renderer_lookup_context(ctx_id);
    if (ctx)
       vkr_context_destroy_resource(ctx, res_id);
