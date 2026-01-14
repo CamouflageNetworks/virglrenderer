@@ -227,7 +227,7 @@ vkr_renderer_create_resource(uint32_t ctx_id,
    // TRANSITION Venus -> APIR
    if (use_apir_backend_instead_of_vk()) {
       return apir_renderer_create_resource(ctx_id, res_id, blob_id, blob_size, blob_flags,
-                                           out_fd_type, out_res_fd, out_map_info, out_vulkan_info);
+                                           out_fd_type, out_res_fd, out_map_info, out_map_ptr, out_vulkan_info);
    }
 #endif
    assert(res_id);

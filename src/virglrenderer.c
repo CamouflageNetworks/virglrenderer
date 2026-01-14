@@ -59,6 +59,8 @@
 #include "virgl_resource.h"
 #include "virgl_util.h"
 
+#include "apir/apir-virgl-context.h"
+
 struct global_state {
    bool client_initialized;
    void *cookie;
@@ -74,6 +76,7 @@ struct global_state {
    bool drm_initialized;
    bool fence_initialized;
    bool vkr_initialized;
+   bool apir_initialized;
 };
 
 static struct global_state state;
@@ -195,6 +198,9 @@ void virgl_renderer_fill_caps(uint32_t set, uint32_t version,
    case VIRTGPU_DRM_CAPSET_APIR:
       if (state.proxy_initialized)
          proxy_get_capset(set, caps);
+      else if (state.apir_initialized) {
+         apir_get_capset(set, caps);
+      }
       break;
    case VIRTGPU_DRM_CAPSET_DRM:
       if (state.drm_initialized)
@@ -253,9 +259,13 @@ int virgl_renderer_context_create_with_flags(uint32_t ctx_id,
       ctx = vrend_renderer_context_create(ctx_id, nlen, name);
       break;
    case VIRTGPU_DRM_CAPSET_APIR:
-      if (!state.proxy_initialized)
+      if (state.proxy_initialized)
+         ctx = proxy_context_create(ctx_id, ctx_flags, nlen, name);
+      else if (state.apir_initialized)
+         ctx = apir_virgl_context_create(ctx_id, name);
+      else
          return EINVAL;
-      ctx = proxy_context_create(ctx_id, ctx_flags, nlen, name);
+
       break;
    case VIRTGPU_DRM_CAPSET_VENUS:
       if (state.proxy_initialized) {
@@ -595,7 +605,11 @@ void virgl_renderer_get_cap_set(uint32_t cap_set, uint32_t *max_ver,
       break;
    case VIRTGPU_DRM_CAPSET_APIR:
       *max_ver = 0;
+#if ENABLE_APIR && !ENABLE_RENDER_SERVER
+      *max_size = apir_get_capset(cap_set, NULL);
+#else
       *max_size = proxy_get_capset(cap_set, NULL);
+#endif
       break;
    case VIRTGPU_DRM_CAPSET_VENUS:
       *max_ver = 0;
@@ -1128,6 +1142,15 @@ int virgl_renderer_init(void *cookie, int flags, struct virgl_renderer_callbacks
       }
    }
 #endif
+
+   flags = flags | VIRGL_RENDERER_APIR;
+   if (!state.apir_initialized && (flags & VIRGL_RENDERER_APIR)) {
+      ret = apir_renderer_init();
+      if (!ret) {
+         goto fail;
+      }
+      state.apir_initialized = true;
+   }
 
    if ((flags & VIRGL_RENDERER_ASYNC_FENCE_CB) &&
        (flags & VIRGL_RENDERER_DRM)) {

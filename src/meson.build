@@ -60,6 +60,25 @@ vrend_winsys_glx_sources = [
    'vrend/vrend_winsys_glx.c',
 ]
 
+apir_sources = [
+    'apir/apir.h',
+    'apir/apir.c',
+    'apir/apir-context.c',
+    'apir/apir-context.h',
+    'apir/apir-virgl-context.c',
+    'apir/apir-virgl-context.h',
+    'apir/apir-resource.c',
+    'apir/apir-resource.h',
+    'apir/apir-lib-impl.h',
+    'apir/apir-protocol.h',
+    'apir/apir-protocol-impl.h',
+    'apir/apir-renderer.c',
+    'apir/apir-renderer.h',
+    'apir/apir-hw.h',
+    'apir/apir-codec.h',
+    'apir/apir-codec.c',
+]
+
 venus_sources = [
    'venus/vkr_acceleration_structure.c',
    'venus/vkr_allocator.c',
