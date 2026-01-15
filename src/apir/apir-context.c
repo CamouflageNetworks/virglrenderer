@@ -47,6 +47,14 @@ apir_context_create(uint32_t ctx_id, const char *debug_name)
       return NULL;
    }
 
+   // Initialize configuration storage
+   mtx_init(&ctx->config_mutex, mtx_plain);
+   ctx->config_table = _mesa_hash_table_create(NULL, _mesa_hash_string, _mesa_key_string_equal);
+   if (!ctx->config_table) {
+      apir_context_destroy(ctx);
+      return NULL;
+   }
+
    // Initialize APIR-specific state
    // (encoder/decoder will be initialized in get_response_stream like before)
    ctx->dispatch_fn = NULL;
@@ -87,7 +95,23 @@ apir_context_destroy(struct apir_context *ctx)
       _mesa_hash_table_destroy(ctx->resource_table, NULL);
    }
 
+   // Clean up configuration storage
+   if (ctx->config_table) {
+      mtx_lock(&ctx->config_mutex);
+
+      hash_table_foreach(ctx->config_table, entry) {
+         char *key = (char *)entry->key;
+         char *value = (char *)entry->data;
+         free(key);
+         free(value);
+      }
+
+      mtx_unlock(&ctx->config_mutex);
+      _mesa_hash_table_destroy(ctx->config_table, NULL);
+   }
+
    mtx_destroy(&ctx->resource_mutex);
+   mtx_destroy(&ctx->config_mutex);
    free(ctx->debug_name);
    free(ctx);
 }
@@ -166,4 +190,20 @@ struct apir_context *apir_context_lookup(uint32_t ctx_id)
    const struct hash_entry *entry = _mesa_hash_table_search(apir_context_table,
                                                             (void*)(uintptr_t)ctx_id);
    return entry ? entry->data : NULL;
+}
+
+const char *apir_context_get_config(struct apir_context *ctx, const char *key)
+{
+   if (!ctx || !key || !ctx->config_table) {
+      return NULL;
+   }
+
+   mtx_lock(&ctx->config_mutex);
+
+   const struct hash_entry *entry = _mesa_hash_table_search(ctx->config_table, key);
+   const char *value = entry ? (const char *)entry->data : NULL;
+
+   mtx_unlock(&ctx->config_mutex);
+
+   return value;
 }
