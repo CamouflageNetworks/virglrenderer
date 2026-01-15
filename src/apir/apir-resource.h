@@ -41,6 +41,7 @@ void apir_resource_destroy(struct apir_context *ctx, uint32_t res_id);
 void apir_resource_destroy_locked(struct apir_resource *res);
 volatile uint32_t *apir_resource_get_shmem_ptr(struct apir_context *ctx, uint32_t res_id);
 
-bool apir_resource_create_blob(uint64_t blob_size,
+bool apir_resource_create_blob(uint64_t blob_id,
+                               uint64_t blob_size,
                                uint32_t blob_flags,
                                struct virgl_context_blob *out_blob);

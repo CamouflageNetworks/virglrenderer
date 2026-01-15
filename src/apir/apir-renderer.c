@@ -180,7 +180,7 @@ bool apir_renderer_create_resource(uint32_t ctx_id,
    }
 
    struct virgl_context_blob blob;
-   if (!apir_resource_create_blob(blob_size, blob_flags, &blob)) {
+   if (!apir_resource_create_blob(blob_id, blob_size, blob_flags, &blob)) {
       APIR_ERROR("apir_resource_create_blob failed");
       return false;
    }
@@ -192,11 +192,18 @@ bool apir_renderer_create_resource(uint32_t ctx_id,
          close(blob.u.fd);
          return false;
       }
+   } else if (blob.type == VIRGL_RESOURCE_OPAQUE_HANDLE) {
+#ifdef __APPLE__
+      /* For Apple OPAQUE_HANDLE blobs, the memory is already mapped in the blob.map_ptr */
+      mmap_ptr = (void *)(uintptr_t)blob.map_ptr;
+#endif
    }
 
    struct apir_resource *res = malloc(sizeof(*res));
    if (!res) {
-      close(blob.u.fd);
+      if (blob.type == VIRGL_RESOURCE_FD_SHM) {
+         close(blob.u.fd);
+      }
       if (mmap_ptr) {
          munmap(mmap_ptr, blob_size);
       }
@@ -211,8 +218,12 @@ bool apir_renderer_create_resource(uint32_t ctx_id,
    if (blob.type == VIRGL_RESOURCE_FD_SHM) {
       res->fd = blob.u.fd;
       res->u.data = (uint8_t *)mmap_ptr;
+   } else if (blob.type == VIRGL_RESOURCE_OPAQUE_HANDLE) {
+      res->fd = -1;  // OPAQUE_HANDLE doesn't use file descriptors
+      res->u.data = (uint8_t *)mmap_ptr;  // Set the mapped memory pointer
    } else {
       res->fd = -1;
+      res->u.data = NULL;
    }
 
    // Store in APIR hash table
@@ -224,6 +235,12 @@ bool apir_renderer_create_resource(uint32_t ctx_id,
    *out_fd_type = blob.type;
    *out_res_fd = blob.u.fd;
    *out_map_info = blob.map_info;
+
+#ifdef __APPLE__
+   if (blob.type == VIRGL_RESOURCE_OPAQUE_HANDLE) {
+      *out_map_ptr = blob.map_ptr;
+   }
+#endif
 
    if (blob.type == VIRGL_RESOURCE_FD_OPAQUE) {
       assert(out_vulkan_info);
