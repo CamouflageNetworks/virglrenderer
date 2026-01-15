@@ -28,6 +28,10 @@ struct apir_context {
    mtx_t resource_mutex;
    struct hash_table *resource_table;
 
+   /* Configuration key-value storage */
+   mtx_t config_mutex;
+   struct hash_table *config_table;
+
    /* APIR-specific state */
    struct apir_encoder encoder;
    struct apir_decoder decoder;
@@ -54,3 +58,6 @@ bool apir_context_get_fatal(struct apir_context *ctx);
 struct apir_context *apir_context_lookup(uint32_t ctx_id);
 
 void apir_context_table_init(void);
+
+// Configuration management
+const char *apir_context_get_config(struct apir_context *ctx, const char *key);

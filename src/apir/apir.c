@@ -1,5 +1,9 @@
 #include <sys/stat.h>    // for struct stat, stat(), S_ISREG
+#include <string.h>      // for string operations
+#include <stdlib.h>      // for malloc/free
 
+#include "util/hash_table.h"
+#include "apir.h"
 #include "apir-protocol.h"
 #include "apir-context.h"
 #include "apir-resource.h"
@@ -219,4 +223,52 @@ dlopen_validated_library_name(struct apir_context *ctx, const char *library_name
    ctx->library_handle = dlopen(library_name, RTLD_LAZY);
 
    return ctx->library_handle != NULL;
+}
+
+int virgl_apir_configure_kv(uint32_t ctx_id, const char *key, const char *value) {
+   struct apir_context *ctx = apir_context_lookup(ctx_id);
+   if (!ctx) {
+      APIR_ERROR("Cannot configure KV: context %u not found", ctx_id);
+      return -1;
+   }
+
+   if (!key || !value) {
+      APIR_ERROR("Cannot configure KV: key or value is NULL");
+      return -1;
+   }
+
+   if (!ctx->config_table) {
+      APIR_ERROR("Cannot configure KV: config_table not initialized");
+      return -1;
+   }
+
+   // Make copies of the key and value strings
+   char *key_copy = strdup(key);
+   char *value_copy = strdup(value);
+
+   if (!key_copy || !value_copy) {
+      APIR_ERROR("Cannot configure KV: failed to allocate memory for strings");
+      free(key_copy);
+      free(value_copy);
+      return -1;
+   }
+
+   mtx_lock(&ctx->config_mutex);
+
+   // Check if key already exists and free old value if so
+   struct hash_entry *existing_entry = _mesa_hash_table_search(ctx->config_table, key_copy);
+   if (existing_entry) {
+      char *old_value = (char *)existing_entry->data;
+      free(old_value);
+      existing_entry->data = value_copy;
+      free(key_copy); // We don't need the new key copy since we're reusing the existing key
+   } else {
+      // Insert new key-value pair
+      _mesa_hash_table_insert(ctx->config_table, key_copy, value_copy);
+   }
+
+   mtx_unlock(&ctx->config_mutex);
+
+   printf("CONFIGURE: %s --> %s (ctx: %u)\n", key, value, ctx_id);
+   return 0;
 }
