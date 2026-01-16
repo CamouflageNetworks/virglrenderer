@@ -4,15 +4,29 @@
 
 #include "util/hash_table.h"
 #include "apir.h"
+#include "apir-renderer.h"
 #include "apir-protocol.h"
 #include "apir-context.h"
 #include "apir-resource.h"
 #include "apir-codec.h"
-#include "apir-impl.h"
-#include "apir-callbacks.h"
+#include "apir-lib-impl.h"
+#include "apir-protocol-impl.h"
 
 static bool
 dlopen_validated_library_name(struct apir_context *ctx, const char *library_name);
+
+static const char *apir_cb_get_config(uint32_t virgl_ctx_id, const char *key) {
+   return apir_context_get_config(apir_context_lookup(virgl_ctx_id), key);
+}
+
+static volatile uint32_t *apir_cb_get_shmem_ptr(uint32_t virgl_ctx_id, uint32_t res_id) {
+   return apir_resource_get_shmem_ptr(apir_context_lookup(virgl_ctx_id), res_id);
+}
+
+static struct apir_callbacks apir_callbacks = {
+   /* get_config    = */ apir_cb_get_config,
+   /* get_shmem_ptr = */ apir_cb_get_shmem_ptr,
+};
 
 void
 apir_HandShake(struct apir_context *ctx, UNUSED ApirCommandFlags flags)
@@ -71,13 +85,14 @@ apir_LoadLibrary(struct apir_context *ctx, ApirCommandFlags UNUSED flags)
       return;
    }
 
-   const char *library_name = getenv(VIRGL_APIR_BACKEND_LIBRARY_ENV);
+   const char *library_name = apir_context_get_config(ctx, APIR_LIBRARY_CFG_KEY);
+
    if (!library_name) {
-      APIR_ERROR("failed to load the library: %s env var not set", VIRGL_APIR_BACKEND_LIBRARY_ENV);
-      send_response(ctx, atomic_reply_notif_p, APIR_LOAD_LIBRARY_ENV_VAR_MISSING);
+      APIR_ERROR("failed to load the library: %s env var not set", APIR_LIBRARY_CFG_KEY);
+      send_response(ctx, atomic_reply_notif_p, APIR_LOAD_LIBRARY_CFG_KEY_MISSING);
       return;
    }
-
+   APIR_INFO("APIR backend library loaded ==> %s", library_name);
    if (ctx->library_handle) {
       APIR_INFO("APIR backend library already loaded.");
 
@@ -90,12 +105,9 @@ apir_LoadLibrary(struct apir_context *ctx, ApirCommandFlags UNUSED flags)
     */
 
    APIR_INFO("%s: loading the APIR backend library '%s' ...", __func__, library_name);
-
-
-
    if (!dlopen_validated_library_name(ctx, library_name)) {
       APIR_ERROR("cannot open the API Remoting library at %s (from %s): %s",
-                 library_name, VIRGL_APIR_BACKEND_LIBRARY_ENV, dlerror());
+                 library_name, APIR_LIBRARY_CFG_KEY, dlerror());
 
       send_response(ctx, atomic_reply_notif_p, APIR_LOAD_LIBRARY_CANNOT_OPEN);
       return;
@@ -134,7 +146,7 @@ apir_LoadLibrary(struct apir_context *ctx, ApirCommandFlags UNUSED flags)
     * Initialize the APIR backend library
     */
 
-   uint32_t apir_init_ret = apir_init_fn();
+   uint32_t apir_init_ret = apir_init_fn(ctx->ctx_id, &apir_callbacks);
    if (apir_init_ret && apir_init_ret != APIR_LOAD_LIBRARY_INIT_BASE_INDEX) {
       if (apir_init_ret < APIR_LOAD_LIBRARY_INIT_BASE_INDEX) {
          APIR_ERROR("failed to initialize the APIR backend library: error %s (code %d)",
@@ -171,15 +183,6 @@ apir_Forward(struct apir_context *ctx, ApirCommandFlags flags) {
 
    /* *** */
 
-   static struct apir_callbacks callbacks = {
-      /* get_shmem_ptr = */ apir_resource_get_shmem_ptr,
-   };
-
-   struct apir_callbacks_context apir_cb_ctx = {
-      /* virgl_ctx = */ ctx,
-      /* iface     = */ callbacks,
-   };
-
    char *dec_cur;
    const char *dec_end;
    apir_decoder_get_stream(&ctx->decoder, &dec_cur, &dec_end);
@@ -190,14 +193,15 @@ apir_Forward(struct apir_context *ctx, ApirCommandFlags flags) {
    char *enc_cur_after;
    uint32_t apir_dispatch_ret;
    apir_dispatch_ret = ctx->dispatch_fn(
-      flags, &apir_cb_ctx,
+      ctx->ctx_id,
+      &apir_callbacks, flags,
       dec_cur, dec_end,
       enc_cur, enc_end,
       &enc_cur_after
       );
 
    if (!apir_encoder_seek_stream((struct apir_encoder *) enc, (enc_cur_after - enc_cur))) {
-      APIR_ERROR("Failed to sync the encoder stream");
+      APIR_ERROR("%s: Failed to sync the encoder stream", __func__);
 
       send_response(ctx, atomic_reply_notif_p, APIR_FORWARD_NO_DISPATCH_FN);
       return;
@@ -267,6 +271,7 @@ int virgl_apir_configure_kv(uint32_t ctx_id, const char *key, const char *value)
       _mesa_hash_table_insert(ctx->config_table, key_copy, value_copy);
    }
 
+   ctx->configured = true;
    mtx_unlock(&ctx->config_mutex);
 
    printf("CONFIGURE: %s --> %s (ctx: %u)\n", key, value, ctx_id);

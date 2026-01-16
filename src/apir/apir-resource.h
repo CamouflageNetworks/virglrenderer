@@ -29,6 +29,10 @@ struct apir_resource {
 static inline struct apir_resource *
 apir_resource_get(struct apir_context *ctx, uint32_t res_id)
 {
+   if (!ctx) {
+      return NULL;
+   }
+
    mtx_lock(&ctx->resource_mutex);
    const struct hash_entry *entry = _mesa_hash_table_search(ctx->resource_table, (void*)(uintptr_t)res_id);
    struct apir_resource *res = likely(entry) ? entry->data : NULL;

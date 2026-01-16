@@ -3,10 +3,11 @@
 #include "apir-renderer.h"
 #include "apir-context.h"
 #include "apir-protocol.h"
-#include "apir-impl.h"
+#include "apir-lib-impl.h"
 #include "apir-resource.h"
 #include "apir-hw.h"
 #include "apir-codec.h"
+#include "apir-protocol-impl.h"
 
 #include "../src/drm/drm-uapi/virtgpu_drm.h"
 #include "virglrenderer.h"

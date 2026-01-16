@@ -5,7 +5,7 @@
 
 #include "virgl_resource.h"
 
-#include "apir-impl.h"
+#include "apir-lib-impl.h"
 
 // TRANSITION Venus -> APIR
 #include <stdlib.h>

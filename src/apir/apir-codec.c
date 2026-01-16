@@ -1,5 +1,6 @@
 #include "apir-codec.h"
 #include "apir-context.h"
+#include "apir-renderer.h"
 
 struct apir_encoder *
 get_response_stream(struct apir_context *ctx, volatile uint32_t **atomic_reply_notif_p)

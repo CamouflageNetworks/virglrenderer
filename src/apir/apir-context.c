@@ -1,9 +1,11 @@
 #include <dlfcn.h>
 #include <string.h>
 
+#include "apir.h"
+#include "apir-renderer.h"
 #include "apir-context.h"
 #include "apir-resource.h"
-#include "apir-impl.h"
+#include "apir-lib-impl.h"
 
 #include "c11/threads.h"
 #include "util/hash_table.h"
@@ -25,6 +27,25 @@ static bool
 compare_uint32(const void *key1, const void *key2)
 {
    return key1 == key2;
+}
+
+// only relevant during the hypervisor transition period
+// called from the proxy side, with the ctx->config_table locked
+static void
+apir_context_transition_populate_config(struct apir_context *ctx) {
+#define APIR_ADD_CONFIG_KV(key, value)                                  \
+   if ((value))                                                         \
+      _mesa_hash_table_insert(ctx->config_table, strdup(key), strdup(value))
+
+   APIR_ADD_CONFIG_KV(APIR_LIBRARY_CFG_KEY, getenv("VIRGL_APIR_BACKEND_LIBRARY"));
+
+   APIR_ADD_CONFIG_KV("ggml.library.path", getenv("APIR_LLAMA_CPP_GGML_LIBRARY_PATH"));
+   APIR_ADD_CONFIG_KV("ggml.library.reg", getenv("APIR_LLAMA_CPP_GGML_LIBRARY_REG"));
+   APIR_ADD_CONFIG_KV("ggml.library.init", getenv("APIR_LLAMA_CPP_GGML_LIBRARY_INIT"));
+
+#undef APIR_ADD_CONFIG_KV
+
+   ctx->configured = true;
 }
 
 struct apir_context *
@@ -54,6 +75,7 @@ apir_context_create(uint32_t ctx_id, const char *debug_name)
       apir_context_destroy(ctx);
       return NULL;
    }
+   ctx->configured = false;
 
    // Initialize APIR-specific state
    // (encoder/decoder will be initialized in get_response_stream like before)
@@ -119,6 +141,11 @@ apir_context_destroy(struct apir_context *ctx)
 void
 apir_context_set_fatal(struct apir_context *ctx)
 {
+   if (!ctx) {
+      APIR_ERROR("APIR context fatal error: but not context received ...\n");
+      return;
+   }
+
    APIR_ERROR("APIR context fatal error: ctx_id=%u", ctx->ctx_id);
 
    ctx->fatal = true;
@@ -151,7 +178,7 @@ apir_context_deinit(struct apir_context *ctx)
       *(void**)(&apir_deinit_fct) = dlsym(ctx->library_handle, APIR_DEINIT_FN_NAME);
 
       if (apir_deinit_fct) {
-         apir_deinit_fct();
+         apir_deinit_fct(ctx->ctx_id);
       } else {
          APIR_WARNING("the APIR backend library does not provide a deinit function.", __func__);
       }
@@ -200,9 +227,13 @@ const char *apir_context_get_config(struct apir_context *ctx, const char *key)
 
    mtx_lock(&ctx->config_mutex);
 
+   if (!ctx->configured) {
+      APIR_WARNING("APIR CONTEXT not configured by the hypervisor.. Populating the configuration map during the transition period.");
+      apir_context_transition_populate_config(ctx);
+   }
+
    const struct hash_entry *entry = _mesa_hash_table_search(ctx->config_table, key);
    const char *value = entry ? (const char *)entry->data : NULL;
-
    mtx_unlock(&ctx->config_mutex);
 
    return value;
