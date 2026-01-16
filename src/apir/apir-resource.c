@@ -1,6 +1,6 @@
 #include "apir-resource.h"
 #include "apir-context.h"
-#include "apir-impl.h"  // for APIR_ERROR
+#include "apir-renderer.h"
 
 #include "util/anon_file.h"
 #include "virgl_context.h" // for struct virgl_context_blob
@@ -11,6 +11,11 @@
 
 volatile uint32_t *
 apir_resource_get_shmem_ptr(struct apir_context *ctx, uint32_t res_id) {
+   if (!ctx) {
+      APIR_ERROR("%s: no context received", __func__);
+      return NULL;
+   }
+
    struct apir_resource *res = apir_resource_get(ctx, res_id);
 
    if (!res) {

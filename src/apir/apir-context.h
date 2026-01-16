@@ -5,8 +5,7 @@
 
 #include "virgl_context.h"
 
-#include "apir-callbacks.h"
-#include "apir-impl.h"
+#include "apir-lib-impl.h"
 
 struct apir_decoder {
    const uint8_t *data;
@@ -31,6 +30,7 @@ struct apir_context {
    /* Configuration key-value storage */
    mtx_t config_mutex;
    struct hash_table *config_table;
+   bool configured;
 
    /* APIR-specific state */
    struct apir_encoder encoder;
