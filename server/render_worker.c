@@ -3,12 +3,21 @@
  * SPDX-License-Identifier: MIT
  */
 
-#ifndef __APPLE__
-#include <sys/signalfd.h>
+#ifdef __APPLE__
+/* Render server is Linux-only (uses signalfd, C11 threads, etc).
+ * On macOS we run virglrenderer in-process, so stub this out. */
+#include "render_worker.h"
+struct render_worker_jail *render_worker_jail_create(int max, enum render_worker_jail_seccomp_filter f, const char *p) { (void)max; (void)f; (void)p; return NULL; }
+void render_worker_jail_destroy(struct render_worker_jail *j) { (void)j; }
+int render_worker_jail_get_sigchld_fd(const struct render_worker_jail *j) { (void)j; return -1; }
+bool render_worker_jail_reap_workers(struct render_worker_jail *j) { (void)j; return false; }
+void render_worker_jail_detach_workers(struct render_worker_jail *j) { (void)j; }
+struct render_worker *render_worker_create(struct render_worker_jail *j, int (*f)(void*), void *d, size_t s) { (void)j; (void)f; (void)d; (void)s; return NULL; }
+void render_worker_destroy(struct render_worker_jail *j, struct render_worker *w) { (void)j; (void)w; }
+bool render_worker_is_record(const struct render_worker *w) { (void)w; return false; }
 #else
-#include <sys/event.h>
-#undef LIST_ENTRY
-#endif
+
+#include <sys/signalfd.h>
 #include "render_worker.h"
 
 /* One and only one of ENABLE_RENDER_SERVER_WORKER_* must be set.
@@ -502,3 +511,5 @@ render_worker_is_record(const struct render_worker *worker)
    return worker->pid > 0;
 #endif
 }
+
+#endif /* __APPLE__ */

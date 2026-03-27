@@ -21,8 +21,14 @@ vkr_dispatch_vkEnumerateInstanceVersion(UNUSED struct vn_dispatch_context *dispa
 
    uint32_t version = 0;
    args->ret = vk->EnumerateInstanceVersion(&version);
+   fprintf(stderr, "vkr: EnumerateInstanceVersion ret=%d version=%u.%u.%u\n",
+           args->ret, VK_API_VERSION_MAJOR(version),
+           VK_API_VERSION_MINOR(version), VK_API_VERSION_PATCH(version));
    if (args->ret == VK_SUCCESS)
       version = vkr_api_version_cap_minor(version, VKR_MAX_API_VERSION);
+   fprintf(stderr, "vkr: EnumerateInstanceVersion capped=%u.%u.%u\n",
+           VK_API_VERSION_MAJOR(version),
+           VK_API_VERSION_MINOR(version), VK_API_VERSION_PATCH(version));
 
    *args->pApiVersion = version;
 }
@@ -96,23 +102,35 @@ vkr_dispatch_vkCreateInstance(struct vn_dispatch_context *dispatch,
    struct vkr_context *ctx = dispatch->data;
    struct vn_global_proc_table *vk = &ctx->proc_table;
 
+   fprintf(stderr, "vkr: vkCreateInstance ENTERED ctx=%u\n", ctx->ctx_id);
+   vkr_log("vkCreateInstance: ENTERED (ctx=%u)", ctx->ctx_id);
+
    if (ctx->instance) {
+      vkr_log("vkCreateInstance: FATAL — instance already exists");
       vkr_context_set_fatal(ctx);
       return;
    }
 
    if (args->pCreateInfo->enabledLayerCount) {
+      vkr_log("vkCreateInstance: REJECTED — %u layers requested", args->pCreateInfo->enabledLayerCount);
       args->ret = VK_ERROR_LAYER_NOT_PRESENT;
       return;
    }
 
    if (args->pCreateInfo->enabledExtensionCount) {
+      vkr_log("vkCreateInstance: REJECTED — %u extensions requested", args->pCreateInfo->enabledExtensionCount);
+      for (uint32_t i = 0; i < args->pCreateInfo->enabledExtensionCount; i++)
+         vkr_log("  ext[%u]: %s", i, args->pCreateInfo->ppEnabledExtensionNames[i]);
       args->ret = VK_ERROR_EXTENSION_NOT_PRESENT;
       return;
    }
 
    uint32_t instance_version;
    args->ret = vk->EnumerateInstanceVersion(&instance_version);
+   vkr_log("vkCreateInstance: EnumerateInstanceVersion → %d (version=%u.%u.%u)",
+           args->ret, VK_API_VERSION_MAJOR(instance_version),
+           VK_API_VERSION_MINOR(instance_version),
+           VK_API_VERSION_PATCH(instance_version));
    if (args->ret != VK_SUCCESS)
       return;
 
@@ -181,6 +199,13 @@ vkr_dispatch_vkCreateInstance(struct vn_dispatch_context *dispatch,
    create_info->enabledLayerCount = layer_count;
    create_info->ppEnabledLayerNames = layer_names;
 
+#ifdef __APPLE__
+   /* macOS: MoltenVK is a portability subset driver. Set the enumerate bit
+    * so MoltenVK reports its device. Don't request VK_KHR_portability_enumeration
+    * — that's a Vulkan loader extension, not supported by MoltenVK directly. */
+   create_info->flags |= 0x00000001; /* VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR */
+#endif
+
    assert(ext_count <= ARRAY_SIZE(ext_names));
    create_info->enabledExtensionCount = ext_count;
    create_info->ppEnabledExtensionNames = ext_names;
@@ -207,11 +232,22 @@ vkr_dispatch_vkCreateInstance(struct vn_dispatch_context *dispatch,
    instance->api_version = app_info.apiVersion;
 
    vn_replace_vkCreateInstance_args_handle(args);
+   fprintf(stderr, "vkr: calling MoltenVK vkCreateInstance (ext_count=%u api=%u.%u.%u)\n",
+           ext_count, VK_API_VERSION_MAJOR(app_info.apiVersion),
+           VK_API_VERSION_MINOR(app_info.apiVersion),
+           VK_API_VERSION_PATCH(app_info.apiVersion));
    args->ret = vk->CreateInstance(create_info, NULL, &instance->base.handle.instance);
+   fprintf(stderr, "vkr: MoltenVK vkCreateInstance returned %d\n", args->ret);
    if (args->ret != VK_SUCCESS) {
+      vkr_log("vkCreateInstance failed: %d (ext_count=%u api=%u.%u.%u)",
+              args->ret, ext_count,
+              VK_API_VERSION_MAJOR(app_info.apiVersion),
+              VK_API_VERSION_MINOR(app_info.apiVersion),
+              VK_API_VERSION_PATCH(app_info.apiVersion));
       free(instance);
       return;
    }
+   vkr_log("vkCreateInstance OK (ext_count=%u)", ext_count);
 
    vkr_instance_init_proc_table(instance, ctx);
 

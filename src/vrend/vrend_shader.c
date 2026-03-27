@@ -6270,55 +6270,31 @@ static void emit_header(const struct dump_ctx *ctx, struct vrend_glsl_strbufs *g
          emit_ver_ext(glsl_strbufs, "#version 330\n");
          emit_ext(glsl_strbufs, "ARB_compute_shader", "require");
       } else {
-         if (ctx->glsl_ver_required > 150)
-            emit_ver_extf(glsl_strbufs, "#version %d\n", ctx->glsl_ver_required);
-         else if (ctx->prog_type == TGSI_PROCESSOR_GEOMETRY ||
-             ctx->prog_type == TGSI_PROCESSOR_TESS_EVAL ||
-             ctx->prog_type == TGSI_PROCESSOR_TESS_CTRL ||
-             ctx->glsl_ver_required == 150)
-            emit_ver_ext(glsl_strbufs, "#version 150\n");
-         else if (ctx->glsl_ver_required == 140)
-            emit_ver_ext(glsl_strbufs, "#version 140\n");
-         else
-            emit_ver_ext(glsl_strbufs, "#version 130\n");
+         /* macOS GL 4.1 Core profile: force GLSL 410 to match our actual GL
+          * version. All built-ins and features through GL 4.1 are available
+          * natively — no ARB extensions needed. */
+         int ver = ctx->glsl_ver_required;
+         if (ver < 410) ver = 410; /* Match macOS GL 4.1 — maximum available */
+         emit_ver_extf(glsl_strbufs, "#version %d\n", ver);
       }
 
-      if (ctx->shader_req_bits & SHADER_REQ_ENHANCED_LAYOUTS)
-         emit_ext(glsl_strbufs, "ARB_enhanced_layouts", "require");
+      /* macOS GL 4.1 Core profile: ALL ARB extensions through GL 4.1 are core
+       * at #version 330+. Skip ALL ARB_ extensions unconditionally. */
 
-      if (ctx->shader_req_bits & SHADER_REQ_SEPERATE_SHADER_OBJECTS)
-         emit_ext(glsl_strbufs, "ARB_separate_shader_objects", "require");
-
-      if (ctx->shader_req_bits & SHADER_REQ_EXPLICIT_ATTRIB_LOCATION)
-         emit_ext(glsl_strbufs, "ARB_explicit_attrib_location", "require");
-
-      if (ctx->shader_req_bits & SHADER_REQ_ARRAYS_OF_ARRAYS)
-         emit_ext(glsl_strbufs, "ARB_arrays_of_arrays", "require");
-
-      if (ctx->prog_type == TGSI_PROCESSOR_TESS_CTRL ||
-          ctx->prog_type == TGSI_PROCESSOR_TESS_EVAL)
-         emit_ext(glsl_strbufs, "ARB_tessellation_shader", "require");
-
-      if (ctx->prog_type == TGSI_PROCESSOR_VERTEX && ctx->cfg->use_explicit_locations)
-         emit_ext(glsl_strbufs, "ARB_explicit_attrib_location", "require");
-      if (ctx->prog_type == TGSI_PROCESSOR_FRAGMENT && fs_emit_layout(ctx))
-         emit_ext(glsl_strbufs, "ARB_fragment_coord_conventions", "require");
-
-      if (ctx->ubo_used_mask)
-         emit_ext(glsl_strbufs, "ARB_uniform_buffer_object", "require");
-
-      if (ctx->num_cull_dist_prop || ctx->key->num_in_cull || ctx->key->num_out_cull)
-         emit_ext(glsl_strbufs, "ARB_cull_distance", "require");
-      if (ctx->ssbo_used_mask)
-         emit_ext(glsl_strbufs, "ARB_shader_storage_buffer_object", "require");
-
-      if (ctx->num_abo) {
-         emit_ext(glsl_strbufs, "ARB_shader_atomic_counters", "require");
-         emit_ext(glsl_strbufs, "ARB_shader_atomic_counter_ops", "require");
-      }
+      /* These would normally emit ARB extensions — all suppressed on macOS:
+       * ARB_enhanced_layouts, ARB_separate_shader_objects,
+       * ARB_explicit_attrib_location, ARB_arrays_of_arrays,
+       * ARB_tessellation_shader, ARB_fragment_coord_conventions,
+       * ARB_uniform_buffer_object, ARB_cull_distance,
+       * ARB_shader_storage_buffer_object, ARB_shader_atomic_counters,
+       * ARB_shader_atomic_counter_ops, and all shader_req_table ARB entries. */
 
       for (uint32_t i = 0; i < ARRAY_SIZE(shader_req_table); i++) {
          if (shader_req_table[i].key == SHADER_REQ_SAMPLER_RECT && ctx->glsl_ver_required >= 140)
+            continue;
+
+         /* Skip ALL ARB_ extensions — they are core in GL 3.1+ */
+         if (strncmp(shader_req_table[i].string, "ARB_", 4) == 0)
             continue;
 
          if (ctx->shader_req_bits & shader_req_table[i].key) {

@@ -322,6 +322,16 @@ fail:
 int
 vkr_allocator_resource_map(struct virgl_resource *res, void **map, uint64_t *out_size)
 {
+#ifdef __APPLE__
+   /* macOS: the direct-mapped pointer was stored in res->private_data
+    * by vkr_device_memory_export_blob via vkMapMemory. */
+   if (res->private_data) {
+      *map = res->private_data;
+      *out_size = res->map_size;
+      return 0;
+   }
+   return -EINVAL;
+#else
    if (!vkr_allocator_initialized) {
       if (vkr_allocator_init())
          return -EINVAL;
@@ -345,6 +355,7 @@ vkr_allocator_resource_map(struct virgl_resource *res, void **map, uint64_t *out
    *out_size = mem_info->size;
 
    return 0;
+#endif
 }
 
 static struct vkr_opaque_fd_mem_info *

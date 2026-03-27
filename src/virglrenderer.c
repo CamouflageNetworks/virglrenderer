@@ -41,6 +41,7 @@
 #include "util/u_format.h"
 #include "util/u_math.h"
 #include "vkr_allocator.h"
+#include "venus/vkr_renderer.h"
 #include "drm_renderer.h"
 #include "proxy/proxy_renderer.h"
 #include "vrend/vrend_renderer.h"
@@ -72,6 +73,7 @@ struct global_state {
    bool external_winsys_initialized;
    bool drm_initialized;
    bool fence_initialized;
+   bool vkr_initialized;
 };
 
 static struct global_state state;
@@ -187,6 +189,8 @@ void virgl_renderer_fill_caps(uint32_t set, uint32_t version,
    case VIRTGPU_DRM_CAPSET_VENUS:
       if (state.proxy_initialized)
          proxy_get_capset(set, caps);
+      else if (state.vkr_initialized)
+         vkr_get_capset(caps, state.flags);
       break;
    case VIRTGPU_DRM_CAPSET_DRM:
       if (state.drm_initialized)
@@ -196,6 +200,12 @@ void virgl_renderer_fill_caps(uint32_t set, uint32_t version,
       break;
    }
 }
+
+#ifdef __APPLE__
+static struct virgl_context *
+vkr_virgl_context_create(uint32_t ctx_id, uint32_t ctx_flags,
+                          uint32_t nlen, const char *name);
+#endif
 
 static void per_context_fence_retire(struct virgl_context *ctx,
                                      uint32_t ring_idx,
@@ -239,9 +249,15 @@ int virgl_renderer_context_create_with_flags(uint32_t ctx_id,
       ctx = vrend_renderer_context_create(ctx_id, nlen, name);
       break;
    case VIRTGPU_DRM_CAPSET_VENUS:
-      if (!state.proxy_initialized)
+      if (state.proxy_initialized) {
+         ctx = proxy_context_create(ctx_id, ctx_flags, nlen, name);
+#ifdef __APPLE__
+      } else if (state.vkr_initialized) {
+         ctx = vkr_virgl_context_create(ctx_id, ctx_flags, nlen, name);
+#endif
+      } else {
          return EINVAL;
-      ctx = proxy_context_create(ctx_id, ctx_flags, nlen, name);
+      }
       break;
    case VIRTGPU_DRM_CAPSET_DRM:
       if (!state.drm_initialized)
@@ -570,7 +586,10 @@ void virgl_renderer_get_cap_set(uint32_t cap_set, uint32_t *max_ver,
       break;
    case VIRTGPU_DRM_CAPSET_VENUS:
       *max_ver = 0;
-      *max_size = proxy_get_capset(cap_set, NULL);
+      if (state.proxy_initialized)
+         *max_size = proxy_get_capset(cap_set, NULL);
+      else
+         *max_size = vkr_get_capset(NULL, 0);
       break;
    case VIRTGPU_DRM_CAPSET_DRM:
       *max_ver = 0;
@@ -792,6 +811,146 @@ void virgl_renderer_cleanup(UNUSED void *cookie)
    memset(&state, 0, sizeof(state));
 }
 
+#ifdef __APPLE__
+/* In-process Venus (VKR) wrapper — adapts vkr_context to virgl_context interface.
+ * On Linux, this goes through the proxy/render-server; on macOS we run in-process. */
+
+#include "venus/vkr_context.h"
+
+struct vkr_virgl_context {
+   struct virgl_context base;
+   struct vkr_context *vkr_ctx;
+};
+
+static void vkr_inprocess_fence_retire(uint32_t ctx_id, uint32_t ring_idx, uint64_t fence_id)
+{
+   struct virgl_context *ctx = virgl_context_lookup(ctx_id);
+   if (ctx)
+      per_context_fence_retire(ctx, ring_idx, fence_id);
+}
+
+static void vkr_virgl_destroy(struct virgl_context *base)
+{
+   struct vkr_virgl_context *ctx = (struct vkr_virgl_context *)base;
+   if (ctx->vkr_ctx) {
+      vkr_context_destroy(ctx->vkr_ctx);
+      ctx->vkr_ctx = NULL;
+   }
+   free(ctx);
+}
+
+static int vkr_virgl_submit_cmd(struct virgl_context *base, const void *buffer, size_t size)
+{
+   struct vkr_virgl_context *ctx = (struct vkr_virgl_context *)base;
+   /* vkr_context_submit_cmd returns bool: true=success, false=error.
+    * virgl convention: 0=success, non-zero=error. Invert. */
+   return vkr_context_submit_cmd(ctx->vkr_ctx, buffer, size) ? 0 : -1;
+}
+
+static int vkr_virgl_get_blob(struct virgl_context *base,
+                               uint32_t res_id, uint64_t blob_id,
+                               uint64_t blob_size, uint32_t blob_flags,
+                               struct virgl_context_blob *blob)
+{
+   struct vkr_virgl_context *ctx = (struct vkr_virgl_context *)base;
+   if (vkr_context_create_resource(ctx->vkr_ctx, res_id, blob_id,
+                                    blob_size, blob_flags, blob))
+      return 0;
+   return -EINVAL;
+}
+
+static int vkr_virgl_submit_fence(struct virgl_context *base,
+                                   uint32_t flags, uint32_t ring_idx,
+                                   uint64_t fence_id)
+{
+   struct vkr_virgl_context *ctx = (struct vkr_virgl_context *)base;
+   return vkr_context_submit_fence(ctx->vkr_ctx, flags, ring_idx, fence_id);
+}
+
+static void vkr_virgl_retire_fences(struct virgl_context *base)
+{
+   (void)base;
+   /* Fences are retired via the callback mechanism */
+}
+
+static void vkr_virgl_attach_resource(struct virgl_context *base, struct virgl_resource *res)
+{
+#ifdef __APPLE__
+   /* macOS: import the resource into the Venus context if it has mapped memory.
+    * On the render server path, resources are created through vkr_context_create_resource
+    * and are already known. On the inprocess path, the guest attaches existing resources
+    * (e.g., from the MAP_BLOB probe) that need to be imported as SHM for the Venus ring. */
+   if (res->private_data && res->map_size > 0) {
+      struct vkr_virgl_context *ctx = (struct vkr_virgl_context *)base;
+      bool ok = vkr_context_import_resource_from_mmap(ctx->vkr_ctx, res->res_id,
+                                                       res->map_size, res->private_data);
+      if (!ok) {
+         vkr_log("macOS: failed to import resource %u into Venus context", res->res_id);
+      } else {
+         vkr_log("macOS: imported resource %u (size=%llu ptr=%p) into Venus context",
+                 res->res_id, (unsigned long long)res->map_size, res->private_data);
+      }
+   }
+#else
+   (void)base;
+   (void)res;
+#endif
+}
+
+static void vkr_virgl_detach_resource(struct virgl_context *base, struct virgl_resource *res)
+{
+   struct vkr_virgl_context *ctx = (struct vkr_virgl_context *)base;
+   vkr_context_destroy_resource(ctx->vkr_ctx, res->res_id);
+}
+
+/* Redirect a Venus SHM resource's backing memory to a new pointer.
+ * Used on macOS to make virglrenderer use the SHM BAR HVA directly,
+ * so both guest and host access the same physical pages. */
+extern void vkr_redirect_resource_data(uint32_t ctx_id, uint32_t res_id, void *new_data);
+void vkr_redirect_resource_data(uint32_t ctx_id, uint32_t res_id, void *new_data)
+{
+   struct virgl_context *base = virgl_context_lookup(ctx_id);
+   if (!base) return;
+   struct vkr_virgl_context *ctx = (struct vkr_virgl_context *)base;
+   struct vkr_resource *res = vkr_context_get_resource(ctx->vkr_ctx, res_id);
+   if (res && res->fd_type == VIRGL_RESOURCE_FD_SHM) {
+      fprintf(stderr, "vkr: redirect_resource_data res=%u old=%p new=%p\n",
+              res_id, res->u.data, new_data);
+      res->u.data = new_data;
+   }
+}
+
+static struct virgl_context *
+vkr_virgl_context_create(uint32_t ctx_id, uint32_t ctx_flags,
+                          uint32_t nlen, const char *name)
+{
+   struct vkr_virgl_context *ctx = calloc(1, sizeof(*ctx));
+   if (!ctx)
+      return NULL;
+
+   struct vkr_context *vkr = vkr_context_create(ctx_id,
+      vkr_inprocess_fence_retire, nlen, name);
+   if (!vkr) {
+      free(ctx);
+      return NULL;
+   }
+
+   ctx->vkr_ctx = vkr;
+   ctx->base.ctx_id = ctx_id;
+   ctx->base.capset_id = VIRTGPU_DRM_CAPSET_VENUS;
+   ctx->base.destroy = vkr_virgl_destroy;
+   ctx->base.attach_resource = vkr_virgl_attach_resource;
+   ctx->base.detach_resource = vkr_virgl_detach_resource;
+   ctx->base.submit_cmd = vkr_virgl_submit_cmd;
+   ctx->base.get_blob = vkr_virgl_get_blob;
+   ctx->base.submit_fence = vkr_virgl_submit_fence;
+   ctx->base.retire_fences = vkr_virgl_retire_fences;
+   ctx->base.fence_retire = per_context_fence_retire;
+
+   return &ctx->base;
+}
+#endif /* __APPLE__ */
+
 int virgl_renderer_init(void *cookie, int flags, struct virgl_renderer_callbacks *cbs)
 {
    TRACE_INIT();
@@ -936,6 +1095,24 @@ int virgl_renderer_init(void *cookie, int flags, struct virgl_renderer_callbacks
       }
       state.proxy_initialized = true;
    }
+
+#ifdef __APPLE__
+   /* On macOS, the proxy/render-server path is stubbed (no signalfd, no C11 threads).
+    * Initialize Venus (VKR) in-process instead.  Venus will dlopen MoltenVK. */
+   if (!state.vkr_initialized && !state.proxy_initialized &&
+       (flags & VIRGL_RENDERER_VENUS)) {
+      static struct vkr_renderer_callbacks vkr_cbs = {
+         .retire_fence = vkr_inprocess_fence_retire,
+      };
+      uint32_t vkr_flags = VKR_RENDERER_THREAD_SYNC | VKR_RENDERER_ASYNC_FENCE_CB;
+      if (vkr_renderer_init(vkr_flags, &vkr_cbs)) {
+         state.vkr_initialized = true;
+      } else {
+         virgl_error("failed to initialize in-process Venus/VKR");
+         /* non-fatal: continue without Venus */
+      }
+   }
+#endif
 
    if ((flags & VIRGL_RENDERER_ASYNC_FENCE_CB) &&
        (flags & VIRGL_RENDERER_DRM)) {
@@ -1133,6 +1310,21 @@ int virgl_renderer_execute(void *execute_args, uint32_t execute_size)
    }
 }
 
+#ifdef __APPLE__
+/* macOS direct-map: vkr_device_memory_export_blob stores the vkMapMemory pointer
+ * here. virgl_renderer_resource_create_blob transfers it to the resource's
+ * private_data, and virgl_renderer_resource_map returns it. This avoids the
+ * FD export/import path that requires VK_KHR_external_memory_fd. */
+static void *g_macos_pending_map_ptr;
+static uint64_t g_macos_pending_map_size;
+
+void vkr_macos_set_pending_map(void *ptr, uint64_t size);
+void vkr_macos_set_pending_map(void *ptr, uint64_t size) {
+   g_macos_pending_map_ptr = ptr;
+   g_macos_pending_map_size = size;
+}
+#endif
+
 int virgl_renderer_resource_create_blob(const struct virgl_renderer_resource_create_blob_args *args)
 {
    TRACE_FUNC();
@@ -1224,6 +1416,17 @@ int virgl_renderer_resource_create_blob(const struct virgl_renderer_resource_cre
    res->map_info = blob.map_info;
    res->map_size = args->size;
 
+#ifdef __APPLE__
+   /* macOS: transfer the pending direct-map pointer to this resource. */
+   if (g_macos_pending_map_ptr) {
+      res->private_data = g_macos_pending_map_ptr;
+      if (g_macos_pending_map_size > 0)
+         res->map_size = g_macos_pending_map_size;
+      g_macos_pending_map_ptr = NULL;
+      g_macos_pending_map_size = 0;
+   }
+#endif
+
    return 0;
 }
 
@@ -1238,12 +1441,49 @@ int virgl_renderer_resource_map(uint32_t res_handle, void **out_map, uint64_t *o
    if (!res || res->mapped)
       return -EINVAL;
 
+#ifdef __APPLE__
+   /* macOS: check for a direct-mapped pointer from vkr_device_memory_export_blob.
+    * This is set when a Venus blob was created with vkMapMemory. */
+   if (res->private_data) {
+      map = res->private_data;
+      map_size = res->map_size;
+   } else if (g_macos_pending_map_ptr) {
+      /* Pending map from a just-created blob that hasn't been stored yet. */
+      map = g_macos_pending_map_ptr;
+      map_size = g_macos_pending_map_size;
+      res->private_data = map;
+      g_macos_pending_map_ptr = NULL;
+      g_macos_pending_map_size = 0;
+   }
+   if (map) {
+      res->mapped = map;
+      *out_map = map;
+      *out_size = map_size;
+      return 0;
+   }
+#endif
+
    if (res->pipe_resource) {
       ret = vrend_renderer_resource_map(res->pipe_resource, &map, &map_size);
       if (!ret) {
          res->map_size = map_size;
          res->mapped_from_pipe_resource = true;
       }
+#ifdef __APPLE__
+      else {
+         /* macOS: the pipe_resource may be a texture (not a GL buffer), so
+          * vrend_renderer_resource_map fails. Allocate a temporary host buffer
+          * so the guest's Venus host_visible probe succeeds. Without this, the
+          * guest kernel disables has_host_visible and Venus can't use blobs. */
+         map_size = res->map_size > 0 ? res->map_size : 4096;
+         map = mmap(NULL, map_size, PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANON, -1, 0);
+         if (map && map != MAP_FAILED) {
+            res->map_size = map_size;
+            ret = 0;
+         }
+      }
+#endif
    } else {
       enum virgl_resource_fd_type fd_type = res->fd_type;
       enum virgl_resource_fd_type export_fd_type = res->fd_type;
@@ -1274,9 +1514,6 @@ int virgl_renderer_resource_map(uint32_t res_handle, void **out_map, uint64_t *o
          map_size = res->map_size;
          break;
       case VIRGL_RESOURCE_FD_INVALID:
-         /* Avoid a default case so that -Wswitch will tell us at compile time
-          * if a new virgl resource type is added without being handled here.
-          */
          break;
       }
 

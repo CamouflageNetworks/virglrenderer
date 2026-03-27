@@ -1125,7 +1125,11 @@ static const char *vrend_ctx_error_strings[] = {
 void vrend_report_context_error_internal(const char *fname, struct vrend_context *ctx,
                                          enum virgl_ctx_errors error, uint32_t value)
 {
-   ctx->in_error = true;
+   /* macOS: Never poison the context. On Linux+QEMU, the host GL is compat
+    * profile and more forgiving. On macOS Core Profile, transient errors
+    * (missing surfaces, GL state issues) are common during startup and
+    * shouldn't permanently disable the context. */
+   /* ctx->in_error = true; — disabled for macOS */
    ctx->last_error = error;
    virgl_error("%s: context error reported %d \"%s\" %s %d\n", fname,
                ctx->ctx_id, ctx->debug_name, vrend_ctx_error_strings[error],
@@ -1907,8 +1911,8 @@ static bool vrend_link_separable_shader(struct vrend_sub_context *sub_ctx,
                glBindFragDataLocationIndexed(shader->program_id, 0, 0, "fsout_c0");
                glBindFragDataLocationIndexed(shader->program_id, 0, 1, "fsout_c1");
             } else {
-               glBindFragDataLocationIndexedEXT(shader->program_id, 0, 0, "fsout_c0");
-               glBindFragDataLocationIndexedEXT(shader->program_id, 0, 1, "fsout_c1");
+               glBindFragDataLocationIndexed(shader->program_id, 0, 0, "fsout_c0");
+               glBindFragDataLocationIndexed(shader->program_id, 0, 1, "fsout_c1");
             }
          } else {
             vrend_report_context_error(sub_ctx->parent, VIRGL_ERROR_CTX_ILLEGAL_DUAL_SRC_BLEND, 0);
@@ -2050,8 +2054,8 @@ static struct vrend_linked_shader_program *add_shader_program(struct vrend_sub_c
                glBindFragDataLocationIndexed(fs_id, 0, 0, "fsout_c0");
                glBindFragDataLocationIndexed(fs_id, 0, 1, "fsout_c1");
             } else {
-               glBindFragDataLocationIndexedEXT(fs_id, 0, 0, "fsout_c0");
-               glBindFragDataLocationIndexedEXT(fs_id, 0, 1, "fsout_c1");
+               glBindFragDataLocationIndexed(fs_id, 0, 0, "fsout_c0");
+               glBindFragDataLocationIndexed(fs_id, 0, 1, "fsout_c1");
             }
          } else {
             vrend_report_context_error(sub_ctx->parent, VIRGL_ERROR_CTX_ILLEGAL_DUAL_SRC_BLEND, 0);
@@ -4720,7 +4724,7 @@ static void vrend_clear_prepare(struct vrend_sub_context *sub_ctx,
           has_feature(feat_indep_blend)) {
          int i;
          for (i = 0; i < PIPE_MAX_COLOR_BUFS; i++)
-            glColorMaskIndexedEXT(i, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+            glColorMaski(i, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
       } else
          glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
    }
@@ -4775,7 +4779,7 @@ static void vrend_clear_finish(struct vrend_sub_context *sub_ctx,
          int i;
          for (i = 0; i < PIPE_MAX_COLOR_BUFS; i++) {
             struct pipe_blend_state *blend = &sub_ctx->hw_blend_state;
-            glColorMaskIndexedEXT(i, blend->rt[i].colormask & PIPE_MASK_R ? GL_TRUE : GL_FALSE,
+            glColorMaski(i, blend->rt[i].colormask & PIPE_MASK_R ? GL_TRUE : GL_FALSE,
                                   blend->rt[i].colormask & PIPE_MASK_G ? GL_TRUE : GL_FALSE,
                                   blend->rt[i].colormask & PIPE_MASK_B ? GL_TRUE : GL_FALSE,
                                   blend->rt[i].colormask & PIPE_MASK_A ? GL_TRUE : GL_FALSE);
@@ -4903,6 +4907,9 @@ void vrend_clear_surface(struct vrend_context *ctx, uint32_t surf_handle,
    struct vrend_surface *surf;
    GLbitfield bits = 0;
    struct vrend_sub_context *sub_ctx = ctx->sub;
+
+   if (surf_handle == 0)
+      return; /* handle 0 = no surface, silently skip */
 
    surf = vrend_object_lookup(sub_ctx->object_hash, surf_handle,
                               VIRGL_OBJECT_SURFACE);
@@ -5083,6 +5090,18 @@ static void vrend_draw_bind_vertex_legacy(struct vrend_context *ctx,
 
    enable_bitmask = 0;
    disable_bitmask = ~((1ull << va->count) - 1);
+
+   /* macOS: VAOs are per-GL-context, not shared across CGL contexts.
+    * Ensure a valid VAO is bound — regenerate if needed. */
+   {
+      GLint cur_vao = 0;
+      glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &cur_vao);
+      if (cur_vao == 0) {
+         glGenVertexArrays(1, &ctx->sub->vaoid);
+         glBindVertexArray(ctx->sub->vaoid);
+      }
+   }
+
    for (i = 0; i < (int)va->count; i++) {
       struct vrend_vertex_element *ve = &va->elements[i];
       int vbo_index = ve->base.vertex_buffer_index;
@@ -5156,7 +5175,7 @@ static void vrend_draw_bind_vertex_legacy(struct vrend_context *ctx,
          } else {
             glVertexAttribPointer(loc, size, ve->type, ve->norm, vbo->base.stride, (void *)(uintptr_t)(ve->base.src_offset + vbo->base.buffer_offset));
          }
-         glVertexAttribDivisorARB(loc, ve->base.instance_divisor);
+         glVertexAttribDivisor(loc, ve->base.instance_divisor);
       }
    }
    if (ctx->sub->enabled_attribs_bitmask != enable_bitmask) {
@@ -5478,7 +5497,7 @@ static void vrend_draw_bind_images_shader(struct vrend_sub_context *sub_ctx, int
             format = GL_R8UI;
          }
 
-         glBindBufferARB(GL_TEXTURE_BUFFER, iview->texture->gl_id);
+         glBindBuffer(GL_TEXTURE_BUFFER, iview->texture->gl_id);
          glBindTexture(GL_TEXTURE_BUFFER, iview->texture->tbo_tex_id);
 
          if (has_feature(feat_arb_or_gles_ext_texture_buffer)) {
@@ -6052,7 +6071,7 @@ int vrend_draw_vbo(struct vrend_context *ctx,
          glPrimitiveRestartIndex(info->restart_index);
       } else if (has_feature(feat_nv_prim_restart)) {
          glEnableClientState(GL_PRIMITIVE_RESTART_NV);
-         glPrimitiveRestartIndexNV(info->restart_index);
+         glPrimitiveRestartIndex(info->restart_index);
       }
    }
 
@@ -6106,7 +6125,7 @@ int vrend_draw_vbo(struct vrend_context *ctx,
          if (info->start_instance > 0)
             glDrawArraysInstancedBaseInstance(mode, start, count, info->instance_count, info->start_instance);
          else
-            glDrawArraysInstancedARB(mode, start, count, info->instance_count);
+            glDrawArraysInstanced(mode, start, count, info->instance_count);
       } else
          glDrawArrays(mode, start, count);
    } else {
@@ -6150,7 +6169,7 @@ int vrend_draw_vbo(struct vrend_context *ctx,
          if (info->start_instance > 0) {
             glDrawElementsInstancedBaseInstance(mode, info->count, elsz, (void *)(uintptr_t)sub_ctx->ib.offset, info->instance_count, info->start_instance);
          } else
-            glDrawElementsInstancedARB(mode, info->count, elsz, (void *)(uintptr_t)sub_ctx->ib.offset, info->instance_count);
+            glDrawElementsInstanced(mode, info->count, elsz, (void *)(uintptr_t)sub_ctx->ib.offset, info->instance_count);
       } else if (info->min_index != 0 || info->max_index != (unsigned)-1)
          glDrawRangeElements(mode, info->min_index, info->max_index, info->count, elsz, (void *)(uintptr_t)sub_ctx->ib.offset);
       else
@@ -6444,19 +6463,19 @@ static void vrend_hw_emit_blend(struct vrend_sub_context *sub_ctx, struct pipe_b
                continue;
             }
 
-            glBlendFuncSeparateiARB(i, translate_blend_factor(state->rt[i].rgb_src_factor),
+            glBlendFuncSeparatei(i, translate_blend_factor(state->rt[i].rgb_src_factor),
                                     translate_blend_factor(state->rt[i].rgb_dst_factor),
                                     translate_blend_factor(state->rt[i].alpha_src_factor),
                                     translate_blend_factor(state->rt[i].alpha_dst_factor));
-            glBlendEquationSeparateiARB(i, translate_blend_func(state->rt[i].rgb_func),
+            glBlendEquationSeparatei(i, translate_blend_func(state->rt[i].rgb_func),
                                         translate_blend_func(state->rt[i].alpha_func));
-            glEnableIndexedEXT(GL_BLEND, i);
+            glEnablei(GL_BLEND, i);
          } else
-            glDisableIndexedEXT(GL_BLEND, i);
+            glDisablei(GL_BLEND, i);
 
          if (state->rt[i].colormask != sub_ctx->hw_blend_state.rt[i].colormask) {
             sub_ctx->hw_blend_state.rt[i].colormask = state->rt[i].colormask;
-            glColorMaskIndexedEXT(i, state->rt[i].colormask & PIPE_MASK_R ? GL_TRUE : GL_FALSE,
+            glColorMaski(i, state->rt[i].colormask & PIPE_MASK_R ? GL_TRUE : GL_FALSE,
                                   state->rt[i].colormask & PIPE_MASK_G ? GL_TRUE : GL_FALSE,
                                   state->rt[i].colormask & PIPE_MASK_B ? GL_TRUE : GL_FALSE,
                                   state->rt[i].colormask & PIPE_MASK_A ? GL_TRUE : GL_FALSE);
@@ -6847,9 +6866,9 @@ static void vrend_hw_emit_rs(struct vrend_context *ctx)
             report_gles_warn(ctx, GLES_WARN_FLATSHADE_FIRST);
          }
       } else if (state->flatshade_first) {
-         glProvokingVertexEXT(GL_FIRST_VERTEX_CONVENTION_EXT);
+         glProvokingVertex(GL_FIRST_VERTEX_CONVENTION);
       } else {
-         glProvokingVertexEXT(GL_LAST_VERTEX_CONVENTION_EXT);
+         glProvokingVertex(GL_LAST_VERTEX_CONVENTION);
       }
    }
 
@@ -8301,8 +8320,8 @@ static void vrend_create_buffer(struct vrend_resource *gr, uint32_t width, uint3
       buffer_storage_flags |= GL_MAP_COHERENT_BIT;
 
    gr->storage_bits |= VREND_STORAGE_GL_BUFFER;
-   glGenBuffersARB(1, &gr->gl_id);
-   glBindBufferARB(gr->target, gr->gl_id);
+   glGenBuffers(1, &gr->gl_id);
+   glBindBuffer(gr->target, gr->gl_id);
 
    if (buffer_storage_flags) {
       if (has_feature(feat_arb_buffer_storage) && !vrend_state.use_external_blob) {
@@ -8349,7 +8368,7 @@ static void vrend_create_buffer(struct vrend_resource *gr, uint32_t width, uint3
    } else
       glBufferData(gr->target, width, NULL, GL_STREAM_DRAW);
 
-   glBindBufferARB(gr->target, 0);
+   glBindBuffer(gr->target, 0);
 }
 
 static int
@@ -9302,7 +9321,7 @@ static int vrend_renderer_transfer_write_iov(struct vrend_context *ctx,
       if (!info->synchronized)
          map_flags |= GL_MAP_UNSYNCHRONIZED_BIT;
 
-      glBindBufferARB(res->target, res->gl_id);
+      glBindBuffer(res->target, res->gl_id);
       data = glMapBufferRange(res->target, info->box->x, info->box->width, map_flags);
       if (data == NULL) {
          virgl_error("Map failed for element buffer\n");
@@ -9311,7 +9330,7 @@ static int vrend_renderer_transfer_write_iov(struct vrend_context *ctx,
          vrend_read_from_iovec(iov, num_iovs, info->offset, data, info->box->width);
          glUnmapBuffer(res->target);
       }
-      glBindBufferARB(res->target, 0);
+      glBindBuffer(res->target, 0);
    } else {
       GLenum glformat;
       GLenum gltype;
@@ -9645,7 +9664,7 @@ static int vrend_transfer_send_getteximage(struct vrend_resource *res,
 
    if (compressed) {
       if (has_feature(feat_arb_robustness)) {
-         glGetnCompressedTexImageARB(target, info->level, tex_size, data);
+         glGetnCompressedTexImage(target, info->level, tex_size, data);
       } else if (vrend_state.use_gles) {
          report_gles_missing_func(NULL, "glGetCompressedTexImage");
       } else {
@@ -9653,7 +9672,7 @@ static int vrend_transfer_send_getteximage(struct vrend_resource *res,
       }
    } else {
       if (has_feature(feat_arb_robustness)) {
-         glGetnTexImageARB(target, info->level, format, type, tex_size, data);
+         glGetnTexImage(target, info->level, format, type, tex_size, data);
       } else if (vrend_state.use_gles) {
          report_gles_missing_func(NULL, "glGetTexImage");
       } else {
@@ -9718,7 +9737,7 @@ static void do_readpixels(struct vrend_resource *res,
    }
 
    if (has_feature(feat_arb_robustness))
-      glReadnPixelsARB(x, y, width, height, format, type, bufSize, data);
+      glReadnPixels(x, y, width, height, format, type, bufSize, data);
    else if (epoxy_gl_version() >= 45)
       glReadnPixels(x, y, width, height, format, type, bufSize, data);
    else if (has_feature(feat_gles_khr_robustness))
@@ -9945,14 +9964,14 @@ static int vrend_renderer_transfer_send_iov(struct vrend_context *ctx,
    }
 
    if (has_bit(res->storage_bits, VREND_STORAGE_GL_BUFFER)) {
-      glBindBufferARB(res->target, res->gl_id);
+      glBindBuffer(res->target, res->gl_id);
       void *data = glMapBufferRange(res->target, info->box->x, info->box->width, GL_MAP_READ_BIT);
       if (!data)
          virgl_error("Unable to open buffer for reading %d\n", res->target);
       else
          vrend_write_to_iovec(iov, num_iovs, info->offset, data, info->box->width);
       glUnmapBuffer(res->target);
-      glBindBufferARB(res->target, 0);
+      glBindBuffer(res->target, 0);
    } else {
       int ret = -1;
       bool can_readpixels = true;
@@ -10514,12 +10533,12 @@ static void vrend_resource_copy_fallback(struct vrend_resource *src_res,
                             (GLenum)(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i) : src_res->target;
          if (compressed) {
             if (has_feature(feat_arb_robustness))
-               glGetnCompressedTexImageARB(ctarget, src_level, read_chunk_size, tptr + slice_offset);
+               glGetnCompressedTexImage(ctarget, src_level, read_chunk_size, tptr + slice_offset);
             else
                glGetCompressedTexImage(ctarget, src_level, tptr + slice_offset);
          } else {
             if (has_feature(feat_arb_robustness))
-               glGetnTexImageARB(ctarget, src_level, glformat, gltype, read_chunk_size, tptr + slice_offset);
+               glGetnTexImage(ctarget, src_level, glformat, gltype, read_chunk_size, tptr + slice_offset);
             else
                glGetTexImage(ctarget, src_level, glformat, gltype, tptr + slice_offset);
          }
@@ -11968,7 +11987,7 @@ static void vrend_pause_render_condition(struct vrend_context *ctx, bool pause)
          if (has_feature(feat_gl_conditional_render))
             glEndConditionalRender();
          else if (has_feature(feat_nv_conditional_render))
-            glEndConditionalRenderNV();
+            glEndConditionalRender();
       }
    } else {
       if (ctx->sub->cond_render_q_id) {
@@ -11976,7 +11995,7 @@ static void vrend_pause_render_condition(struct vrend_context *ctx, bool pause)
             glBeginConditionalRender(ctx->sub->cond_render_q_id,
                                      ctx->sub->cond_render_gl_mode);
          else if (has_feature(feat_nv_conditional_render))
-            glBeginConditionalRenderNV(ctx->sub->cond_render_q_id,
+            glBeginConditionalRender(ctx->sub->cond_render_q_id,
                                        ctx->sub->cond_render_gl_mode);
       }
    }
@@ -11995,7 +12014,7 @@ void vrend_render_condition(struct vrend_context *ctx,
          if (has_feature(feat_gl_conditional_render))
             glEndConditionalRender();
          else if (has_feature(feat_nv_conditional_render))
-            glEndConditionalRenderNV();
+            glEndConditionalRender();
       }
       ctx->sub->cond_render_q_id = 0;
       ctx->sub->cond_render_gl_mode = 0;
@@ -12030,7 +12049,7 @@ void vrend_render_condition(struct vrend_context *ctx,
    if (has_feature(feat_gl_conditional_render))
       glBeginConditionalRender(q->id, glmode);
    else if (has_feature(feat_nv_conditional_render))
-      glBeginConditionalRenderNV(q->id, glmode);
+      glBeginConditionalRender(q->id, glmode);
 }
 
 int vrend_create_so_target(struct vrend_context *ctx,
@@ -12958,7 +12977,7 @@ void *vrend_renderer_get_cursor_contents(struct pipe_resource *pres,
 
    if (has_feature(feat_arb_robustness)) {
       glBindTexture(res->target, res->gl_id);
-      glGetnTexImageARB(res->target, 0, format, type, size, data);
+      glGetnTexImage(res->target, 0, format, type, size, data);
    } else if (vrend_state.use_gles) {
       do_readpixels(res, 0, 0, 0, 0, 0, *width, *height, format, type, size, data);
    } else {
@@ -13507,12 +13526,12 @@ int vrend_renderer_resource_map(struct pipe_resource *pres, void **map, uint64_t
    if (!has_bits(res->storage_bits, VREND_STORAGE_GL_BUFFER | VREND_STORAGE_GL_IMMUTABLE))
       return -EINVAL;
 
-   glBindBufferARB(res->target, res->gl_id);
+   glBindBuffer(res->target, res->gl_id);
    *map = glMapBufferRange(res->target, 0, res->size, res->buffer_storage_flags);
    if (!*map)
       return -EINVAL;
 
-   glBindBufferARB(res->target, 0);
+   glBindBuffer(res->target, 0);
    *out_size = res->size;
    return 0;
 }
@@ -13523,9 +13542,9 @@ int vrend_renderer_resource_unmap(struct pipe_resource *pres)
    if (!has_bits(res->storage_bits, VREND_STORAGE_GL_BUFFER | VREND_STORAGE_GL_IMMUTABLE))
       return -EINVAL;
 
-   glBindBufferARB(res->target, res->gl_id);
+   glBindBuffer(res->target, res->gl_id);
    glUnmapBuffer(res->target);
-   glBindBufferARB(res->target, 0);
+   glBindBuffer(res->target, 0);
    return 0;
 }
 

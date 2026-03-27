@@ -18,7 +18,11 @@ vkr_dispatch_vkSetReplyCommandStreamMESA(
 {
    struct vkr_context *ctx = dispatch->data;
    struct vkr_resource *res = vkr_context_get_resource(ctx, args->pStream->resourceId);
+   fprintf(stderr, "vkr: SetReplyStream res_id=%u offset=%zu size=%zu res=%p fd_type=%d\n",
+           args->pStream->resourceId, args->pStream->offset, args->pStream->size,
+           (void*)res, res ? res->fd_type : -1);
    if (!res || res->fd_type != VIRGL_RESOURCE_FD_SHM) {
+      fprintf(stderr, "vkr: SetReplyStream FAILED — not SHM (fd_type=%d)\n", res ? res->fd_type : -1);
       vkr_log("failed to set reply stream: invalid res_id %u", args->pStream->resourceId);
       vkr_context_set_fatal(ctx);
       return;
@@ -26,6 +30,8 @@ vkr_dispatch_vkSetReplyCommandStreamMESA(
 
    struct vkr_cs_encoder *enc = (struct vkr_cs_encoder *)dispatch->encoder;
    vkr_cs_encoder_set_stream(enc, res, args->pStream->offset, args->pStream->size);
+   fprintf(stderr, "vkr: SetReplyStream OK — replies to res %u (data=%p) offset=%zu\n",
+           args->pStream->resourceId, res->u.data, args->pStream->offset);
 }
 
 static void

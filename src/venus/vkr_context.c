@@ -163,6 +163,9 @@ vkr_context_submit_fence(struct vkr_context *ctx,
 bool
 vkr_context_submit_cmd(struct vkr_context *ctx, const void *buffer, size_t size)
 {
+   fprintf(stderr, "vkr: submit_cmd ctx=%u size=%zu\n", ctx->ctx_id, size);
+   vkr_log("submit_cmd: ctx=%u size=%zu", ctx->ctx_id, size);
+
    /* CS error is considered fatal (destroy the context?) */
    if (vkr_context_get_fatal(ctx)) {
       vkr_log("submit_cmd: early bail due to fatal decoder state");
@@ -299,11 +302,27 @@ vkr_context_create_resource_from_shm(struct vkr_context *ctx,
       return false;
    }
 
+#ifdef __APPLE__
+   /* macOS: no fd passing to guest. Store the mmap pointer so
+    * virgl_renderer_resource_map can hand it to the VMM for
+    * hv_vm_map into guest physical memory. */
+   {
+      extern void vkr_macos_set_pending_map(void *ptr, uint64_t size);
+      vkr_macos_set_pending_map(mmap_ptr, blob_size);
+   }
+
+   *out_blob = (struct virgl_context_blob){
+      .type = VIRGL_RESOURCE_FD_SHM,
+      .u.fd = -1,
+      .map_info = VIRGL_RENDERER_MAP_CACHE_CACHED,
+   };
+#else
    *out_blob = (struct virgl_context_blob){
       .type = VIRGL_RESOURCE_FD_SHM,
       .u.fd = fd,
       .map_info = VIRGL_RENDERER_MAP_CACHE_CACHED,
    };
+#endif
 
    return true;
 }
@@ -369,6 +388,21 @@ vkr_context_create_resource(struct vkr_context *ctx,
    return vkr_context_create_resource_from_device_memory(ctx, res_id, blob_id, blob_size,
                                                          blob_flags, out_blob);
 }
+
+#ifdef __APPLE__
+bool
+vkr_context_import_resource_from_mmap(struct vkr_context *ctx,
+                                       uint32_t res_id,
+                                       uint64_t blob_size,
+                                       void *mmap_ptr)
+{
+   if (!mmap_ptr || vkr_context_get_resource(ctx, res_id))
+      return false;
+
+   return vkr_context_import_resource_internal(ctx, res_id, blob_size,
+                                                VIRGL_RESOURCE_FD_SHM, -1, mmap_ptr);
+}
+#endif
 
 bool
 vkr_context_import_resource(struct vkr_context *ctx,

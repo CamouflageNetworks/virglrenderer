@@ -316,7 +316,7 @@ static void vrend_video_encode_completed(
 
     /* sync coded data to guest */
     if (has_bit(cdc->dest_res->storage_bits, VREND_STORAGE_GL_BUFFER)) {
-        glBindBufferARB(cdc->dest_res->target, cdc->dest_res->gl_id);
+        glBindBuffer(cdc->dest_res->target, cdc->dest_res->gl_id);
         buf = glMapBufferRange(cdc->dest_res->target, 0,
                                cdc->dest_res->base.width0, GL_MAP_WRITE_BIT);
         for (i = 0, data_size = 0; i < num_coded_bufs &&
@@ -328,7 +328,7 @@ static void vrend_video_encode_completed(
             data_size += size;
         }
         glUnmapBuffer(cdc->dest_res->target);
-        glBindBufferARB(cdc->dest_res->target, 0);
+        glBindBuffer(cdc->dest_res->target, 0);
         feedback.stat = VIRGL_VIDEO_ENCODE_STAT_SUCCESS;
         feedback.coded_size = data_size;
     } else {

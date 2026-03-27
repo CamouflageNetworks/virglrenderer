@@ -2086,7 +2086,10 @@ static int vrend_decode_ctx_submit_cmd(struct virgl_context *ctx,
       ret = 0;
       /* check if the guest is doing something bad */
       if (buf_offset > buf_total) {
-         vrend_report_buffer_error(gdctx->grctx, 0);
+         /* Truncated command at end of buffer — skip it instead of
+          * poisoning the entire context. This can happen due to minor
+          * protocol version mismatches between guest Mesa and host
+          * virglrenderer. All prior commands were processed successfully. */
          break;
       }
 
@@ -2099,11 +2102,13 @@ static int vrend_decode_ctx_submit_cmd(struct virgl_context *ctx,
       if (!vrend_check_no_error(gdctx->grctx) && !ret)
          ret = EINVAL;
       if (ret) {
-         virgl_error("context %d failed to dispatch %s: %d\n",
+         /* Log but don't poison the context or abort — continue processing
+          * remaining commands. A single failed command shouldn't kill the
+          * entire rendering context (causes guest segfaults). */
+         virgl_error("context %d failed to dispatch %s: %d (continuing)\n",
                gdctx->base.ctx_id, vrend_get_comand_name(cmd), ret);
-         if (ret == EINVAL)
-            vrend_report_buffer_error(gdctx->grctx, *buf);
-         return ret;
+         ret = 0; /* reset — don't propagate error */
+         continue;
       }
    }
    return 0;

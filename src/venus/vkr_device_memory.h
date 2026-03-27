@@ -30,6 +30,14 @@ struct vkr_device_memory {
    uint32_t memory_type_index;
 
    bool exported;
+
+#ifdef __APPLE__
+   /* macOS direct-map path: store the mapped pointer from vkMapMemory.
+    * On macOS, VK_KHR_external_memory_fd is unavailable, so we skip
+    * FD export/import and map the device memory directly. */
+   void *direct_map_ptr;
+   uint64_t direct_map_size;
+#endif
 };
 VKR_DEFINE_OBJECT_CAST(device_memory, VK_OBJECT_TYPE_DEVICE_MEMORY, VkDeviceMemory)
 
