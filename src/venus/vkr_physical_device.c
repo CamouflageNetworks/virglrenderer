@@ -351,8 +351,28 @@ vkr_physical_device_init_extensions(struct vkr_physical_device *physical_dev)
          physical_dev->KHR_external_fence_fd = false;
    }
 
+#ifdef __APPLE__
+   /* macOS: MoltenVK doesn't support VK_KHR_external_memory_fd (Linux/POSIX).
+    * But the guest Venus ICD hard-requires it — silently drops the device if missing.
+    * Inject it so the device passes init. Actual fd export is never used;
+    * our VMM uses SHM BAR shared memory for host-guest data sharing.
+    * Only for the in-process direct-map path, and only when the Metal-backed
+    * emulation above did not already advertise it. */
+   if (vkr_macos_direct_map && !physical_dev->KHR_external_memory_fd &&
+       !physical_dev->is_dma_buf_emulated) {
+      physical_dev->KHR_external_memory_fd_shim = true;
+      exts = realloc(exts, sizeof(*exts) * (advertised_count + 1));
+      strncpy(exts[advertised_count].extensionName, "VK_KHR_external_memory_fd",
+              VK_MAX_EXTENSION_NAME_SIZE);
+      exts[advertised_count].specVersion = 1;
+      advertised_count++;
+   }
+#endif
+
    physical_dev->extensions = realloc(exts, sizeof(*exts) * advertised_count);
    physical_dev->extension_count = advertised_count;
+   fprintf(stderr, "vkr: physical device: %u/%u extensions advertised to guest\n",
+           advertised_count, count);
 }
 
 static void
@@ -428,6 +448,8 @@ vkr_dispatch_vkEnumeratePhysicalDevices(struct vn_dispatch_context *dispatch,
       return;
 
    uint32_t count = instance->physical_device_count;
+   fprintf(stderr, "vkr: EnumeratePhysicalDevices count=%u pDevices=%p\n",
+           count, (void*)args->pPhysicalDevices);
    if (!args->pPhysicalDevices) {
       *args->pPhysicalDeviceCount = count;
       args->ret = VK_SUCCESS;
@@ -600,6 +622,13 @@ vkr_dispatch_vkEnumerateDeviceExtensionProperties(
 
    memcpy(args->pProperties, physical_dev->extensions,
           sizeof(*args->pProperties) * count);
+
+   fprintf(stderr, "vkr: EnumerateDeviceExtensionProperties count=%u\n", count);
+   for (uint32_t i = 0; i < count; i++) {
+      if (strstr(args->pProperties[i].extensionName, "portability"))
+         fprintf(stderr, "vkr: WARNING: portability extension exposed: %s\n",
+                 args->pProperties[i].extensionName);
+   }
 }
 
 static void

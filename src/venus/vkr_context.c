@@ -192,10 +192,16 @@ static inline void
 vkr_context_free_resource(struct hash_entry *entry)
 {
    struct vkr_resource *res = entry->data;
-   if (res->fd_type == VIRGL_RESOURCE_FD_SHM)
-      munmap(res->u.data, res->size);
-   else if (res->u.fd >= 0)
+   if (res->fd_type == VIRGL_RESOURCE_FD_SHM) {
+#ifdef __APPLE__
+      /* macOS in-process: res->u.data was redirected to the SHM BAR HVA by
+       * the VMM.  Don't munmap/free it — the SHM BAR is managed by the VMM. */
+      if (!vkr_macos_direct_map)
+#endif
+         munmap(res->u.data, res->size);
+   } else if (res->u.fd >= 0) {
       close(res->u.fd);
+   }
    free(res);
 }
 
@@ -291,44 +297,67 @@ vkr_context_create_resource_from_shm(struct vkr_context *ctx,
    const size_t page_size = getpagesize();
    const uint64_t alloc_size = (blob_size + page_size - 1) & ~(page_size - 1);
 
-   int fd = os_create_anonymous_file(alloc_size, "vkr-shmem");
-   if (fd < 0)
-      return false;
+   int fd = -1;
+   void *mmap_ptr;
+#ifdef __APPLE__
+   if (vkr_macos_direct_map) {
+      /* macOS in-process: don't mmap here — the VMM will redirect res->u.data
+       * to the SHM BAR via vkr_redirect_resource_data. A MAP_SHARED mmap can
+       * overlap with the SHM BAR's MAP_PRIVATE pages, and when the blob
+       * is freed, munmap leaves a hole in the SHM BAR. Use calloc instead
+       * as a temporary backing that gets replaced by the redirect. */
+      mmap_ptr = calloc(1, alloc_size);
+      if (!mmap_ptr)
+         return false;
+   } else
+#endif
+   {
+      fd = os_create_anonymous_file(alloc_size, "vkr-shmem");
+      if (fd < 0)
+         return false;
 
-   void *mmap_ptr = mmap(NULL, alloc_size, PROT_WRITE | PROT_READ, MAP_SHARED, fd, 0);
-   if (mmap_ptr == MAP_FAILED) {
-      close(fd);
-      return false;
+      mmap_ptr = mmap(NULL, alloc_size, PROT_WRITE | PROT_READ, MAP_SHARED, fd, 0);
+      if (mmap_ptr == MAP_FAILED) {
+         close(fd);
+         return false;
+      }
    }
 
    if (!vkr_context_import_resource_internal(ctx, res_id, alloc_size,
                                              VIRGL_RESOURCE_FD_SHM, -1, mmap_ptr)) {
+#ifdef __APPLE__
+      if (vkr_macos_direct_map) {
+         free(mmap_ptr);
+         return false;
+      }
+#endif
       munmap(mmap_ptr, alloc_size);
       close(fd);
       return false;
    }
 
 #ifdef __APPLE__
-   /* macOS: no fd passing to guest. Store the mmap pointer so
-    * virgl_renderer_resource_map can hand it to the VMM for
-    * hv_vm_map into guest physical memory. */
-   {
+   if (vkr_macos_direct_map) {
+      /* macOS in-process: no fd passing to guest. Store the pointer so
+       * virgl_renderer_resource_map can hand it to the VMM for
+       * hv_vm_map into guest physical memory. */
       extern void vkr_macos_set_pending_map(void *ptr, uint64_t size);
       vkr_macos_set_pending_map(mmap_ptr, blob_size);
-   }
 
-   *out_blob = (struct virgl_context_blob){
-      .type = VIRGL_RESOURCE_FD_SHM,
-      .u.fd = -1,
-      .map_info = VIRGL_RENDERER_MAP_CACHE_CACHED,
-   };
-#else
+      *out_blob = (struct virgl_context_blob){
+         .type = VIRGL_RESOURCE_FD_SHM,
+         .u.fd = -1,
+         .map_info = VIRGL_RENDERER_MAP_CACHE_CACHED,
+      };
+      return true;
+   }
+#endif
+
    *out_blob = (struct virgl_context_blob){
       .type = VIRGL_RESOURCE_FD_SHM,
       .u.fd = fd,
       .map_info = VIRGL_RENDERER_MAP_CACHE_CACHED,
    };
-#endif
 
    return true;
 }

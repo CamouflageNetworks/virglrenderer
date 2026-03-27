@@ -37,6 +37,10 @@ struct vkr_physical_device {
    bool is_dma_buf_fd_export_supported;
    bool is_opaque_fd_export_supported;
    bool is_dma_buf_emulated;
+   /* macOS in-process (vkr_macos_direct_map): VK_KHR_external_memory_fd is
+    * advertised to the guest although the host has neither it nor the Metal
+    * emulation; the guest ICD hard-requires it and blobs never use fds. */
+   bool KHR_external_memory_fd_shim;
    void *gbm_device;
    int udmabuf_dev_fd;
 

@@ -132,8 +132,8 @@ vkr_dispatch_vkCreateDevice(struct vn_dispatch_context *dispatch,
     * and would fail vkCreateDevice on it
     */
    const bool drop_emulated =
-      physical_dev->is_dma_buf_emulated || !physical_dev->EXT_image_drm_format_modifier ||
-      !physical_dev->EXT_queue_family_foreign;
+      physical_dev->is_dma_buf_emulated || physical_dev->KHR_external_memory_fd_shim ||
+      !physical_dev->EXT_image_drm_format_modifier || !physical_dev->EXT_queue_family_foreign;
 
    /* append extensions for our own use */
    const char **exts = NULL;
@@ -155,7 +155,9 @@ vkr_dispatch_vkCreateDevice(struct vn_dispatch_context *dispatch,
       for (uint32_t i = 0; i < args->pCreateInfo->enabledExtensionCount; i++) {
          const char *name = args->pCreateInfo->ppEnabledExtensionNames[i];
 
-         if (physical_dev->is_dma_buf_emulated &&
+         /* macOS in-process: strip the shimmed VK_KHR_external_memory_fd (and
+          * dma_buf) from the guest's request; MoltenVK doesn't support them. */
+         if ((physical_dev->is_dma_buf_emulated || physical_dev->KHR_external_memory_fd_shim) &&
              (!strcmp(name, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME) ||
               !strcmp(name, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME)))
             continue;
