@@ -143,12 +143,28 @@ vkr_dispatch_vkCreateDevice(struct vn_dispatch_context *dispatch,
          exts[i] = args->pCreateInfo->ppEnabledExtensionNames[i];
 
       ext_count = args->pCreateInfo->enabledExtensionCount;
+#ifdef __APPLE__
+      /* macOS: strip VK_KHR_external_memory_fd from guest's requested extensions.
+       * We injected it into the extension list so the Venus ICD accepts the device,
+       * but MoltenVK doesn't actually support it. Remove before calling MoltenVK. */
+      {
+         uint32_t filtered = 0;
+         for (uint32_t i = 0; i < ext_count; i++) {
+            if (strcmp(exts[i], "VK_KHR_external_memory_fd") != 0 &&
+                strcmp(exts[i], "VK_EXT_external_memory_dma_buf") != 0 &&
+                strcmp(exts[i], "VK_KHR_external_fence_fd") != 0)
+               exts[filtered++] = exts[i];
+         }
+         ext_count = filtered;
+      }
+#else
       if (physical_dev->KHR_external_memory_fd)
          exts[ext_count++] = "VK_KHR_external_memory_fd";
       if (physical_dev->EXT_external_memory_dma_buf)
          exts[ext_count++] = "VK_EXT_external_memory_dma_buf";
       if (physical_dev->KHR_external_fence_fd)
          exts[ext_count++] = "VK_KHR_external_fence_fd";
+#endif
 
       ((VkDeviceCreateInfo *)args->pCreateInfo)->ppEnabledExtensionNames = exts;
       ((VkDeviceCreateInfo *)args->pCreateInfo)->enabledExtensionCount = ext_count;

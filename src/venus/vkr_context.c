@@ -192,10 +192,17 @@ static inline void
 vkr_context_free_resource(struct hash_entry *entry)
 {
    struct vkr_resource *res = entry->data;
+#ifdef __APPLE__
+   /* macOS: res->u.data was redirected to SHM BAR HVA by the VMM.
+    * Don't munmap/free it — the SHM BAR is managed by vmkit. */
+   if (res->fd_type != VIRGL_RESOURCE_FD_SHM && res->u.fd >= 0)
+      close(res->u.fd);
+#else
    if (res->fd_type == VIRGL_RESOURCE_FD_SHM)
       munmap(res->u.data, res->size);
    else if (res->u.fd >= 0)
       close(res->u.fd);
+#endif
    free(res);
 }
 
@@ -285,6 +292,17 @@ vkr_context_create_resource_from_shm(struct vkr_context *ctx,
 {
    assert(!vkr_context_get_resource(ctx, res_id));
 
+#ifdef __APPLE__
+   /* macOS: don't mmap here — the VMM will redirect res->u.data to the
+    * SHM BAR via vkr_redirect_resource_data. A MAP_SHARED mmap can
+    * overlap with the SHM BAR's MAP_PRIVATE pages, and when the blob
+    * is freed, munmap leaves a hole in the SHM BAR. Use calloc instead
+    * as a temporary backing that gets replaced by the redirect. */
+   void *mmap_ptr = calloc(1, blob_size);
+   if (!mmap_ptr)
+      return false;
+   int fd = -1;
+#else
    int fd = os_create_anonymous_file(blob_size, "vkr-shmem");
    if (fd < 0)
       return false;
@@ -294,6 +312,7 @@ vkr_context_create_resource_from_shm(struct vkr_context *ctx,
       close(fd);
       return false;
    }
+#endif
 
    if (!vkr_context_import_resource_internal(ctx, res_id, blob_size,
                                              VIRGL_RESOURCE_FD_SHM, -1, mmap_ptr)) {

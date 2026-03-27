@@ -28,6 +28,11 @@ vkr_get_capset(void *capset, uint32_t flags)
       memset(c, 0, sizeof(*c));
       c->wire_format_version = vn_info_wire_format_version();
       c->vk_xml_version = vn_info_vk_xml_version();
+      fprintf(stderr, "vkr: HOST capset vk_xml_version=0x%x (%u.%u.%u)\n",
+              c->vk_xml_version,
+              (c->vk_xml_version >> 22) & 0x7F,
+              (c->vk_xml_version >> 12) & 0x3FF,
+              c->vk_xml_version & 0xFFF);
       c->vk_ext_command_serialization_spec_version =
          vkr_extension_get_spec_version("VK_EXT_command_serialization");
       c->vk_mesa_venus_protocol_spec_version =

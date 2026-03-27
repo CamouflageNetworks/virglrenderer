@@ -252,8 +252,8 @@ vkr_ring_thread(void *arg)
    struct vkr_context *ctx = ring->dispatch.data;
    char thread_name[16];
 
-   fprintf(stderr, "vkr: ring thread started ctx=%d buf=%p size=%u\n",
-           ctx->ctx_id, ring->buffer.data, ring->buffer.size);
+   fprintf(stderr, "vkr: ring thread started ctx=%d buf=%p size=%u monitor=%d\n",
+           ctx->ctx_id, ring->buffer.data, ring->buffer.size, ring->monitor);
    snprintf(thread_name, ARRAY_SIZE(thread_name), "vkr-ring-%d", ctx->ctx_id);
    u_thread_setname(thread_name);
    if (ring->prio_valid && setpriority(PRIO_PROCESS, 0, ring->prio)) {
