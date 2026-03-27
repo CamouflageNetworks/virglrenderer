@@ -307,8 +307,14 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
     * asked to export.  The latter is only ever a dma_buf request -- dma_buf is
     * emulated on top of VK_EXT_external_memory_metal -- and is otherwise left to
     * fall through to a host that supports no fd handle type at all.
+    *
+    * The in-process macOS path (vkr_macos_direct_map) never hands out fds: it
+    * vkMapMemory()s the allocation in vkr_device_memory_export_blob instead.
     */
    const bool force_metal_import = physical_dev->EXT_external_memory_metal && !res_info &&
+#ifdef __APPLE__
+                                   !vkr_macos_direct_map &&
+#endif
                                    ((property_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) ||
                                     might_export);
 
@@ -341,6 +347,14 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
       alloc_info->pNext = &local_metal_import;
       alloc_info->allocationSize = mtl_shm->shm_size;
       valid_fd_types = 1 << VIRGL_RESOURCE_FD_SHM;
+#ifdef __APPLE__
+   } else if (vkr_macos_direct_map &&
+              (property_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) && !res_info) {
+      /* macOS in-process: skip external memory export — we use direct vkMapMemory in
+       * vkr_device_memory_export_blob instead of FD export/import. Just mark
+       * as opaque so the blob export path is reached. */
+      valid_fd_types = 1 << VIRGL_RESOURCE_FD_OPAQUE;
+#endif
    } else if ((property_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) && !res_info) {
       /* An implementation can support dma_buf import along with opaque fd export/import.
        * If the client driver is using external memory and requesting dma_buf, without
@@ -580,7 +594,9 @@ vkr_device_memory_export_blob(struct vkr_device_memory *mem,
       const bool coherent = mem->property_flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
       const bool cached = mem->property_flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
       if (!visible) {
-         vkr_log("mem cannot support mappable blob");
+         vkr_log("mem cannot support mappable blob (flags=0x%x size=%llu type=%u)",
+                 mem->property_flags, (unsigned long long)mem->allocation_size,
+                 mem->memory_type_index);
          return false;
       }
 
@@ -598,6 +614,47 @@ vkr_device_memory_export_blob(struct vkr_device_memory *mem,
       };
       return out_blob->u.fd >= 0;
    }
+
+#ifdef __APPLE__
+   /* macOS in-process: VK_KHR_external_memory_fd is not available (MoltenVK
+    * uses Metal, not POSIX FDs for GPU memory). Instead, directly vkMapMemory
+    * the device memory. This works because virglrenderer and MoltenVK share
+    * the same process — no cross-process sharing needed. */
+   if (vkr_macos_direct_map) {
+      struct vn_device_proc_table *vk = &mem->device->proc_table;
+      void *ptr = NULL;
+      VkResult ret = vk->MapMemory(mem->device->base.handle.device,
+                                    mem->base.handle.device_memory,
+                                    0, mem->allocation_size, 0, &ptr);
+      if (ret != VK_SUCCESS || !ptr) {
+         vkr_log("macOS: vkMapMemory failed (ret %d flags=0x%x size=%llu)",
+                 ret, mem->property_flags, (unsigned long long)mem->allocation_size);
+         return false;
+      }
+
+      vkr_log("macOS: vkMapMemory OK ptr=%p size=%llu flags=0x%x",
+              ptr, (unsigned long long)mem->allocation_size, mem->property_flags);
+      mem->direct_map_ptr = ptr;
+      mem->direct_map_size = mem->allocation_size;
+      mem->exported = true;
+
+      /* Store the pointer globally so virgl_renderer_resource_map can
+       * retrieve it. We use a simple global since blob creation and
+       * resource_map are serialized. */
+      extern void vkr_macos_set_pending_map(void *ptr, uint64_t size);
+      vkr_macos_set_pending_map(ptr, mem->allocation_size);
+
+      /* Use OPAQUE type. We patch virgl_renderer_resource_map to check
+       * for a pending macOS direct-map before the normal FD paths. */
+      *out_blob = (struct virgl_context_blob){
+         .type = VIRGL_RESOURCE_FD_OPAQUE,
+         .u.fd = -1,
+         .map_info = map_info,
+      };
+
+      return true;
+   }
+#endif /* __APPLE__ */
 
    const bool can_export_dma_buf = mem->valid_fd_types & (1 << VIRGL_RESOURCE_FD_DMABUF);
    const bool can_export_opaque = mem->valid_fd_types & (1 << VIRGL_RESOURCE_FD_OPAQUE);

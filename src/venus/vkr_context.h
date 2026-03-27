@@ -141,6 +141,14 @@ vkr_context_import_resource(struct vkr_context *ctx,
                             int fd,
                             uint64_t size);
 
+#ifdef __APPLE__
+bool
+vkr_context_import_resource_from_mmap(struct vkr_context *ctx,
+                                       uint32_t res_id,
+                                       uint64_t blob_size,
+                                       void *mmap_ptr);
+#endif
+
 void
 vkr_context_destroy_resource(struct vkr_context *ctx, uint32_t res_id);
 

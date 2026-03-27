@@ -36,6 +36,14 @@
 
 #include "vkr_renderer.h"
 
+#ifdef __APPLE__
+/* Set by the in-process macOS Venus wrapper (virglrenderer.c) before
+ * vkr_renderer_init: blobs are backed by a direct vkMapMemory of the
+ * MoltenVK allocation and handed to the VMM as a host pointer instead of an
+ * fd.  Left false inside the render server, where blobs must be fds. */
+extern bool vkr_macos_direct_map;
+#endif
+
 /* cap instance and device api versions to this */
 #define VKR_MAX_API_VERSION VK_API_VERSION_1_4
 

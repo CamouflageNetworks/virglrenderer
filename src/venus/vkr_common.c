@@ -14,6 +14,10 @@
 #include "vkr_context.h"
 #include "vkr_cs.h"
 
+#ifdef __APPLE__
+bool vkr_macos_direct_map = false;
+#endif
+
 static const struct vn_info_extension_table vkr_extension_table = {
    /* Venus extensions */
    .EXT_command_serialization = true,

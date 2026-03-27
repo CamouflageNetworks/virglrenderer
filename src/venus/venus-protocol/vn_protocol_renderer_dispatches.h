@@ -729,6 +729,9 @@ static inline void vn_dispatch_command(struct vn_dispatch_context *ctx)
     vn_decode_VkCommandTypeEXT(ctx->decoder, &cmd_type);
     vn_decode_VkFlags(ctx->decoder, &cmd_flags);
 
+    fprintf(stderr, "vkr: dispatch cmd=%d (%s) flags=%u\n",
+            cmd_type, (cmd_type < 346) ? vn_dispatch_command_name(cmd_type) : "UNKNOWN", cmd_flags);
+
     {
         if (cmd_type < 346 && vn_dispatch_table[cmd_type])
             vn_dispatch_table[cmd_type](ctx, cmd_flags);
@@ -736,8 +739,10 @@ static inline void vn_dispatch_command(struct vn_dispatch_context *ctx)
             vn_cs_decoder_set_fatal(ctx->decoder);
     }
 
-    if (vn_cs_decoder_get_fatal(ctx->decoder))
+    if (vn_cs_decoder_get_fatal(ctx->decoder)) {
+        fprintf(stderr, "vkr: FATAL CS error cmd=%d (%s)\n", cmd_type, vn_dispatch_command_name(cmd_type));
         vn_dispatch_debug_log(ctx, "%s resulted in CS error", vn_dispatch_command_name(cmd_type));
+    }
 }
 
 #endif /* VN_PROTOCOL_RENDERER_DISPATCHES_H */
