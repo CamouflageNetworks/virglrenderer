@@ -34,6 +34,7 @@
 #include "venus-protocol/vulkan.h"
 #include "virgl_resource.h"
 
+#include "vkr_common.h"
 #include "vkr_library.h"
 
 /* Assume that we will deal with at most 4 devices.
@@ -352,15 +353,17 @@ int
 vkr_allocator_resource_map(struct virgl_resource *res, void **map, uint64_t *out_size)
 {
 #ifdef __APPLE__
-   /* macOS: the direct-mapped pointer was stored in res->private_data
-    * by vkr_device_memory_export_blob via vkMapMemory. */
-   if (res->private_data) {
-      *map = res->private_data;
-      *out_size = res->map_size;
-      return 0;
+   /* macOS in-process: the direct-mapped pointer was stored in
+    * res->private_data by vkr_device_memory_export_blob via vkMapMemory. */
+   if (vkr_macos_direct_map) {
+      if (res->private_data) {
+         *map = res->private_data;
+         *out_size = res->map_size;
+         return 0;
+      }
+      return -EINVAL;
    }
-   return -EINVAL;
-#else
+#endif
    if (!vkr_allocator_initialized) {
       if (vkr_allocator_init())
          return -EINVAL;
@@ -384,7 +387,6 @@ vkr_allocator_resource_map(struct virgl_resource *res, void **map, uint64_t *out
    *out_size = mem_info->size;
 
    return 0;
-#endif
 }
 
 static struct vkr_opaque_fd_mem_info *
@@ -400,6 +402,12 @@ vkr_allocator_get_mem_info(struct virgl_resource *res)
 int
 vkr_allocator_resource_unmap(struct virgl_resource *res)
 {
+#ifdef __APPLE__
+   /* macOS in-process: blob resources use calloc (not mmap/allocator) and
+    * their backing is redirected to the SHM BAR.  Nothing to unmap. */
+   if (vkr_macos_direct_map)
+      return 0;
+#endif
    assert(vkr_allocator_initialized);
 
    struct vkr_opaque_fd_mem_info *mem_info = vkr_allocator_get_mem_info(res);
