@@ -371,6 +371,12 @@ vkr_allocator_get_mem_info(struct virgl_resource *res)
 int
 vkr_allocator_resource_unmap(struct virgl_resource *res)
 {
+#ifdef __APPLE__
+   /* On macOS, blob resources use calloc (not mmap/allocator) and their
+    * backing is redirected to the SHM BAR.  Nothing to unmap. */
+   (void)res;
+   return 0;
+#else
    assert(vkr_allocator_initialized);
 
    struct vkr_opaque_fd_mem_info *mem_info = vkr_allocator_get_mem_info(res);
@@ -382,4 +388,5 @@ vkr_allocator_resource_unmap(struct virgl_resource *res)
    vkr_allocator_free_memory(mem_info);
 
    return 0;
+#endif
 }

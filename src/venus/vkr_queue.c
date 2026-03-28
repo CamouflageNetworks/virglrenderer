@@ -71,6 +71,8 @@ static inline void
 vkr_queue_sync_retire(struct vkr_queue *queue, struct vkr_queue_sync *sync)
 {
    TRACE_FUNC();
+   fprintf(stderr, "vkr: sync_retire ctx=%u ring=%u fence=%" PRIu64 "\n",
+           queue->context->ctx_id, sync->ring_idx, sync->fence_id);
    queue->context->retire_fence(queue->context->ctx_id, sync->ring_idx, sync->fence_id);
    vkr_device_free_queue_sync(queue->device, sync);
 }
@@ -375,10 +377,13 @@ vkr_dispatch_vkQueueSubmit(UNUSED struct vn_dispatch_context *dispatch,
 
    vn_replace_vkQueueSubmit_args_handle(args);
 
+   fprintf(stderr, "vkr: QueueSubmit count=%u fence=%p\n",
+           args->submitCount, (void *)(uintptr_t)args->fence);
    mtx_lock(&queue->vk_mutex);
    args->ret =
       vk->QueueSubmit(args->queue, args->submitCount, args->pSubmits, args->fence);
    mtx_unlock(&queue->vk_mutex);
+   fprintf(stderr, "vkr: QueueSubmit returned %d\n", args->ret);
 }
 
 static void
@@ -416,10 +421,13 @@ vkr_dispatch_vkQueueSubmit2(UNUSED struct vn_dispatch_context *dispatch,
 
    vn_replace_vkQueueSubmit2_args_handle(args);
 
+   fprintf(stderr, "vkr: QueueSubmit2 count=%u fence=%p\n",
+           args->submitCount, (void *)(uintptr_t)args->fence);
    mtx_lock(&queue->vk_mutex);
    args->ret =
       vk->QueueSubmit2(args->queue, args->submitCount, args->pSubmits, args->fence);
    mtx_unlock(&queue->vk_mutex);
+   fprintf(stderr, "vkr: QueueSubmit2 returned %d\n", args->ret);
 }
 
 static void
@@ -466,8 +474,11 @@ vkr_dispatch_vkWaitForFences(UNUSED struct vn_dispatch_context *dispatch,
    struct vn_device_proc_table *vk = &dev->proc_table;
 
    vn_replace_vkWaitForFences_args_handle(args);
+   fprintf(stderr, "vkr: WaitForFences count=%u waitAll=%u timeout=%llu\n",
+           args->fenceCount, args->waitAll, (unsigned long long)args->timeout);
    args->ret = vk->WaitForFences(args->device, args->fenceCount, args->pFences,
                                  args->waitAll, args->timeout);
+   fprintf(stderr, "vkr: WaitForFences returned %d\n", args->ret);
 }
 
 static void
@@ -481,6 +492,15 @@ vkr_dispatch_vkResetFenceResourceMESA(struct vn_dispatch_context *dispatch,
 
    vn_replace_vkResetFenceResourceMESA_args_handle(args);
 
+#ifdef __APPLE__
+   /* macOS/MoltenVK does not support VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT.
+    * Skip the sync_fd export — the guest will fall back to polling vkWaitForFences
+    * through the ring instead. Do NOT set_fatal here; that kills the context. */
+   (void)ctx;
+   (void)vk;
+   (void)fd;
+   fprintf(stderr, "vkr: ResetFenceResourceMESA: skipped (no sync_fd on macOS)\n");
+#else
    const VkFenceGetFdInfoKHR info = {
       .sType = VK_STRUCTURE_TYPE_FENCE_GET_FD_INFO_KHR,
       .fence = args->fence,
@@ -494,6 +514,7 @@ vkr_dispatch_vkResetFenceResourceMESA(struct vn_dispatch_context *dispatch,
 
    if (fd >= 0)
       close(fd);
+#endif
 }
 
 static void
@@ -555,6 +576,14 @@ vkr_dispatch_vkWaitSemaphoreResourceMESA(
 
    vn_replace_vkWaitSemaphoreResourceMESA_args_handle(args);
 
+#ifdef __APPLE__
+   /* macOS/MoltenVK does not support SYNC_FD for semaphores.
+    * Skip — guest will fall back to ring-based waiting. */
+   (void)ctx;
+   (void)vk;
+   (void)fd;
+   fprintf(stderr, "vkr: WaitSemaphoreResourceMESA: skipped (no sync_fd on macOS)\n");
+#else
    const VkSemaphoreGetFdInfoKHR info = {
       .sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR,
       .semaphore = args->semaphore,
@@ -568,6 +597,7 @@ vkr_dispatch_vkWaitSemaphoreResourceMESA(
 
    if (fd >= 0)
       close(fd);
+#endif
 }
 
 static void
@@ -581,6 +611,13 @@ vkr_dispatch_vkImportSemaphoreResourceMESA(
 
    vn_replace_vkImportSemaphoreResourceMESA_args_handle(args);
 
+#ifdef __APPLE__
+   /* macOS/MoltenVK does not support SYNC_FD for semaphore import.
+    * Skip — the semaphore remains in its current state. */
+   (void)ctx;
+   (void)vk;
+   fprintf(stderr, "vkr: ImportSemaphoreResourceMESA: skipped (no sync_fd on macOS)\n");
+#else
    const VkImportSemaphoreResourceInfoMESA *res_info = args->pImportSemaphoreResourceInfo;
 
    /* resourceId 0 is for importing a signaled payload to sync_fd fence */
@@ -595,6 +632,7 @@ vkr_dispatch_vkImportSemaphoreResourceMESA(
    };
    if (vk->ImportSemaphoreFdKHR(args->device, &import_info) != VK_SUCCESS)
       vkr_context_set_fatal(ctx);
+#endif
 }
 
 static void
