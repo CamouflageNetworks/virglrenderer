@@ -729,8 +729,7 @@ static inline void vn_dispatch_command(struct vn_dispatch_context *ctx)
     vn_decode_VkCommandTypeEXT(ctx->decoder, &cmd_type);
     vn_decode_VkFlags(ctx->decoder, &cmd_flags);
 
-    fprintf(stderr, "vkr: dispatch cmd=%d (%s) flags=%u\n",
-            cmd_type, (cmd_type < 346) ? vn_dispatch_command_name(cmd_type) : "UNKNOWN", cmd_flags);
+    /* Dispatch logging disabled — too spammy (fires per Vulkan command) */
 
     {
         if (cmd_type < 346 && vn_dispatch_table[cmd_type])
