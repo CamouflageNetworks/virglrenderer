@@ -21,14 +21,8 @@ vkr_dispatch_vkEnumerateInstanceVersion(UNUSED struct vn_dispatch_context *dispa
 
    uint32_t version = 0;
    args->ret = vk->EnumerateInstanceVersion(&version);
-   fprintf(stderr, "vkr: EnumerateInstanceVersion ret=%d version=%u.%u.%u\n",
-           args->ret, VK_API_VERSION_MAJOR(version),
-           VK_API_VERSION_MINOR(version), VK_API_VERSION_PATCH(version));
    if (args->ret == VK_SUCCESS)
       version = vkr_api_version_cap_minor(version, VKR_MAX_API_VERSION);
-   fprintf(stderr, "vkr: EnumerateInstanceVersion capped=%u.%u.%u\n",
-           VK_API_VERSION_MAJOR(version),
-           VK_API_VERSION_MINOR(version), VK_API_VERSION_PATCH(version));
 
    *args->pApiVersion = version;
 }
@@ -102,7 +96,7 @@ vkr_dispatch_vkCreateInstance(struct vn_dispatch_context *dispatch,
    struct vkr_context *ctx = dispatch->data;
    struct vn_global_proc_table *vk = &ctx->proc_table;
 
-   fprintf(stderr, "vkr: vkCreateInstance ENTERED ctx=%u\n", ctx->ctx_id);
+
    vkr_log("vkCreateInstance: ENTERED (ctx=%u)", ctx->ctx_id);
 
    if (ctx->instance) {
@@ -127,10 +121,6 @@ vkr_dispatch_vkCreateInstance(struct vn_dispatch_context *dispatch,
 
    uint32_t instance_version;
    args->ret = vk->EnumerateInstanceVersion(&instance_version);
-   vkr_log("vkCreateInstance: EnumerateInstanceVersion → %d (version=%u.%u.%u)",
-           args->ret, VK_API_VERSION_MAJOR(instance_version),
-           VK_API_VERSION_MINOR(instance_version),
-           VK_API_VERSION_PATCH(instance_version));
    if (args->ret != VK_SUCCESS)
       return;
 
@@ -232,12 +222,8 @@ vkr_dispatch_vkCreateInstance(struct vn_dispatch_context *dispatch,
    instance->api_version = app_info.apiVersion;
 
    vn_replace_vkCreateInstance_args_handle(args);
-   fprintf(stderr, "vkr: calling MoltenVK vkCreateInstance (ext_count=%u api=%u.%u.%u)\n",
-           ext_count, VK_API_VERSION_MAJOR(app_info.apiVersion),
-           VK_API_VERSION_MINOR(app_info.apiVersion),
-           VK_API_VERSION_PATCH(app_info.apiVersion));
    args->ret = vk->CreateInstance(create_info, NULL, &instance->base.handle.instance);
-   fprintf(stderr, "vkr: MoltenVK vkCreateInstance returned %d\n", args->ret);
+
    if (args->ret != VK_SUCCESS) {
       vkr_log("vkCreateInstance failed: %d (ext_count=%u api=%u.%u.%u)",
               args->ret, ext_count,

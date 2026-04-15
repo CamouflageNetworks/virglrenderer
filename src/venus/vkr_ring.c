@@ -252,8 +252,6 @@ vkr_ring_thread(void *arg)
    struct vkr_context *ctx = ring->dispatch.data;
    char thread_name[16];
 
-   fprintf(stderr, "vkr: ring thread started ctx=%d buf=%p size=%u monitor=%d\n",
-           ctx->ctx_id, ring->buffer.data, ring->buffer.size, ring->monitor);
    snprintf(thread_name, ARRAY_SIZE(thread_name), "vkr-ring-%d", ctx->ctx_id);
    u_thread_setname(thread_name);
    if (ring->prio_valid && setpriority(PRIO_PROCESS, 0, ring->prio)) {
@@ -295,7 +293,8 @@ vkr_ring_thread(void *arg)
          relax_iter = 0;
       }
 
-      const uint32_t cmd_size = vkr_ring_load_tail(ring) - ring->buffer.cur;
+      const uint32_t tail = vkr_ring_load_tail(ring);
+      const uint32_t cmd_size = tail - ring->buffer.cur;
       if (cmd_size) {
          if (cmd_size > ring->buffer.size) {
             vkr_log("%s: cmd_size(%u) > ring->buffer.size(%u)", __func__, cmd_size,
@@ -306,7 +305,6 @@ vkr_ring_thread(void *arg)
 
          const uint32_t ring_head = ring->buffer.cur;
          vkr_ring_read_buffer(ring, ring->cmd, cmd_size);
-         fprintf(stderr, "vkr: ring cmd size=%u head=%u\n", cmd_size, ring_head);
 
          if (!vkr_ring_submit_cmd(ring, ring->cmd, cmd_size, ring_head)) {
             ret = -EINVAL;

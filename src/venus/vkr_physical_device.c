@@ -322,8 +322,6 @@ vkr_physical_device_init_extensions(struct vkr_physical_device *physical_dev)
 
    physical_dev->extensions = realloc(exts, sizeof(*exts) * advertised_count);
    physical_dev->extension_count = advertised_count;
-   fprintf(stderr, "vkr: physical device: %u/%u extensions advertised to guest\n",
-           advertised_count, count);
 }
 
 static void
@@ -384,8 +382,6 @@ vkr_dispatch_vkEnumeratePhysicalDevices(struct vn_dispatch_context *dispatch,
       return;
 
    uint32_t count = instance->physical_device_count;
-   fprintf(stderr, "vkr: EnumeratePhysicalDevices count=%u pDevices=%p\n",
-           count, (void*)args->pPhysicalDevices);
    if (!args->pPhysicalDevices) {
       *args->pPhysicalDeviceCount = count;
       args->ret = VK_SUCCESS;
@@ -558,13 +554,6 @@ vkr_dispatch_vkEnumerateDeviceExtensionProperties(
 
    memcpy(args->pProperties, physical_dev->extensions,
           sizeof(*args->pProperties) * count);
-
-   fprintf(stderr, "vkr: EnumerateDeviceExtensionProperties count=%u\n", count);
-   for (uint32_t i = 0; i < count; i++) {
-      if (strstr(args->pProperties[i].extensionName, "portability"))
-         fprintf(stderr, "vkr: WARNING: portability extension exposed: %s\n",
-                 args->pProperties[i].extensionName);
-   }
 }
 
 static void

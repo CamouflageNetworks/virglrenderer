@@ -914,8 +914,6 @@ void vkr_redirect_resource_data(uint32_t ctx_id, uint32_t res_id, void *new_data
    struct vkr_virgl_context *ctx = (struct vkr_virgl_context *)base;
    struct vkr_resource *res = vkr_context_get_resource(ctx->vkr_ctx, res_id);
    if (res && res->fd_type == VIRGL_RESOURCE_FD_SHM) {
-      fprintf(stderr, "vkr: redirect_resource_data res=%u old=%p new=%p\n",
-              res_id, res->u.data, new_data);
       res->u.data = new_data;
    }
 }

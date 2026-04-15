@@ -115,6 +115,13 @@ struct vrend_resource {
    uint32_t blob_id;
    struct list_head head;
    bool is_imported;
+
+#ifdef __APPLE__
+   /* macOS: pointer to blob mapped memory (from vkMapMemory) for periodic
+    * texture refresh. Set when a Venus blob is typed via pipe_resource_set_type. */
+   void *blob_data;
+   uint64_t blob_data_size;
+#endif
 };
 
 #define VIRGL_TEXTURE_NEED_SWIZZLE        (1 << 0)
@@ -522,6 +529,9 @@ vrend_resource_reference(struct vrend_resource **ptr, struct vrend_resource *tex
 }
 
 void vrend_renderer_force_ctx_0(void);
+#ifdef __APPLE__
+void vrend_renderer_refresh_blob_textures(void);
+#endif
 
 void vrend_renderer_get_rect(struct pipe_resource *pres,
                              const struct iovec *iov, unsigned int num_iovs,

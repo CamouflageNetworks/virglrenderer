@@ -11,6 +11,13 @@
 #include "vkr_physical_device.h"
 #include "vkr_queue_gen.h"
 
+/* Optional callback for syncing device memory blobs after GPU fence completion.
+ * Set by the VMM (vmkit) to copy Metal GPU writes to SHM BAR memory. */
+void (*vkr_blob_sync_cb)(void) = NULL;
+/* Fast sync: only small blobs (feedback + UBOs), skips large swapchain buffers.
+ * Called from queue sync thread immediately after GPU fence completes. */
+void (*vkr_blob_sync_small_cb)(void) = NULL;
+
 static struct vkr_queue_sync *
 vkr_device_alloc_queue_sync(struct vkr_device *dev,
                             uint32_t fence_flags,
@@ -71,8 +78,6 @@ static inline void
 vkr_queue_sync_retire(struct vkr_queue *queue, struct vkr_queue_sync *sync)
 {
    TRACE_FUNC();
-   fprintf(stderr, "vkr: sync_retire ctx=%u ring=%u fence=%" PRIu64 "\n",
-           queue->context->ctx_id, sync->ring_idx, sync->fence_id);
    queue->context->retire_fence(queue->context->ctx_id, sync->ring_idx, sync->fence_id);
    vkr_device_free_queue_sync(queue->device, sync);
 }
@@ -185,10 +190,18 @@ vkr_queue_thread(void *arg)
 
       mtx_lock(&queue->sync_thread.mutex);
 
-      if (result == VK_TIMEOUT)
+      if (result == VK_TIMEOUT) {
          continue;
+      }
 
       list_del(&sync->head);
+
+      /* Sync small device memory blobs (feedback slots + UBOs) from Metal to
+       * SHM BAR. Fast path: skips large swapchain buffers to avoid mid-render
+       * corruption. This delivers fence feedback immediately after GPU completion
+       * instead of waiting for the 5ms timer. */
+      if (vkr_blob_sync_small_cb)
+         vkr_blob_sync_small_cb();
 
       vkr_queue_sync_retire(queue, sync);
    }
@@ -377,13 +390,10 @@ vkr_dispatch_vkQueueSubmit(UNUSED struct vn_dispatch_context *dispatch,
 
    vn_replace_vkQueueSubmit_args_handle(args);
 
-   fprintf(stderr, "vkr: QueueSubmit count=%u fence=%p\n",
-           args->submitCount, (void *)(uintptr_t)args->fence);
    mtx_lock(&queue->vk_mutex);
    args->ret =
       vk->QueueSubmit(args->queue, args->submitCount, args->pSubmits, args->fence);
    mtx_unlock(&queue->vk_mutex);
-   fprintf(stderr, "vkr: QueueSubmit returned %d\n", args->ret);
 }
 
 static void
@@ -421,13 +431,32 @@ vkr_dispatch_vkQueueSubmit2(UNUSED struct vn_dispatch_context *dispatch,
 
    vn_replace_vkQueueSubmit2_args_handle(args);
 
-   fprintf(stderr, "vkr: QueueSubmit2 count=%u fence=%p\n",
-           args->submitCount, (void *)(uintptr_t)args->fence);
+   /* Diagnostic: log submit details to understand WSI blit */
+   static int s2_log = 0;
+   if (s2_log++ < 200 || s2_log % 500 == 0) {
+      uint32_t total_cmds = 0, total_waits = 0, total_signals = 0;
+      for (uint32_t i = 0; i < args->submitCount; i++) {
+         total_cmds += args->pSubmits[i].commandBufferInfoCount;
+         total_waits += args->pSubmits[i].waitSemaphoreInfoCount;
+         total_signals += args->pSubmits[i].signalSemaphoreInfoCount;
+      }
+      char msg[256];
+      int len = snprintf(msg, sizeof(msg),
+         "vmkit: QueueSubmit2 submits=%u cmds=%u waits=%u sigs=%u fence=%p\n",
+         args->submitCount, total_cmds, total_waits, total_signals,
+         (void *)args->fence);
+      write(2, msg, len);
+   }
+
    mtx_lock(&queue->vk_mutex);
    args->ret =
       vk->QueueSubmit2(args->queue, args->submitCount, args->pSubmits, args->fence);
    mtx_unlock(&queue->vk_mutex);
-   fprintf(stderr, "vkr: QueueSubmit2 returned %d\n", args->ret);
+   if (args->ret != 0) {
+      char msg[128];
+      int len = snprintf(msg, sizeof(msg), "vmkit: QueueSubmit2 FAILED ret=%d\n", args->ret);
+      write(2, msg, len);
+   }
 }
 
 static void
@@ -474,11 +503,8 @@ vkr_dispatch_vkWaitForFences(UNUSED struct vn_dispatch_context *dispatch,
    struct vn_device_proc_table *vk = &dev->proc_table;
 
    vn_replace_vkWaitForFences_args_handle(args);
-   fprintf(stderr, "vkr: WaitForFences count=%u waitAll=%u timeout=%llu\n",
-           args->fenceCount, args->waitAll, (unsigned long long)args->timeout);
    args->ret = vk->WaitForFences(args->device, args->fenceCount, args->pFences,
                                  args->waitAll, args->timeout);
-   fprintf(stderr, "vkr: WaitForFences returned %d\n", args->ret);
 }
 
 static void
@@ -499,7 +525,6 @@ vkr_dispatch_vkResetFenceResourceMESA(struct vn_dispatch_context *dispatch,
    (void)ctx;
    (void)vk;
    (void)fd;
-   fprintf(stderr, "vkr: ResetFenceResourceMESA: skipped (no sync_fd on macOS)\n");
 #else
    const VkFenceGetFdInfoKHR info = {
       .sType = VK_STRUCTURE_TYPE_FENCE_GET_FD_INFO_KHR,
@@ -582,7 +607,7 @@ vkr_dispatch_vkWaitSemaphoreResourceMESA(
    (void)ctx;
    (void)vk;
    (void)fd;
-   fprintf(stderr, "vkr: WaitSemaphoreResourceMESA: skipped (no sync_fd on macOS)\n");
+
 #else
    const VkSemaphoreGetFdInfoKHR info = {
       .sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR,
@@ -613,10 +638,31 @@ vkr_dispatch_vkImportSemaphoreResourceMESA(
 
 #ifdef __APPLE__
    /* macOS/MoltenVK does not support SYNC_FD for semaphore import.
-    * Skip — the semaphore remains in its current state. */
-   (void)ctx;
-   (void)vk;
-   fprintf(stderr, "vkr: ImportSemaphoreResourceMESA: skipped (no sync_fd on macOS)\n");
+    * On Linux, fd=-1 with SYNC_FD means "already signaled."
+    * Emulate by doing a dummy QueueSubmit that signals the semaphore. */
+   {
+      const VkImportSemaphoreResourceInfoMESA *res_info = args->pImportSemaphoreResourceInfo;
+
+      if (!list_is_empty(&dev->queues)) {
+         struct vkr_queue *queue =
+            list_first_entry(&dev->queues, struct vkr_queue, base.track_head);
+         const VkSubmitInfo submit_info = {
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .signalSemaphoreCount = 1,
+            .pSignalSemaphores = &res_info->semaphore,
+         };
+         mtx_lock(&queue->vk_mutex);
+         VkResult result = vk->QueueSubmit(queue->base.handle.queue, 1, &submit_info, VK_NULL_HANDLE);
+         mtx_unlock(&queue->vk_mutex);
+         if (result != VK_SUCCESS) {
+
+            vkr_context_set_fatal(ctx);
+         }
+      } else {
+
+         vkr_context_set_fatal(ctx);
+      }
+   }
 #else
    const VkImportSemaphoreResourceInfoMESA *res_info = args->pImportSemaphoreResourceInfo;
 

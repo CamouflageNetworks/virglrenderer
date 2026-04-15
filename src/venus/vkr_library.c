@@ -44,11 +44,9 @@ vkr_library_load(struct vulkan_library *lib)
    /* Check VMKIT_MOLTENVK_PATH for absolute path first (macOS dlopen
     * doesn't search DYLD_LIBRARY_PATH set after process start) */
    const char *mvk_path = getenv("VMKIT_MOLTENVK_PATH");
-   fprintf(stderr, "vkr_library_load: VMKIT_MOLTENVK_PATH=%s\n", mvk_path ? mvk_path : "(null)");
+
    if (mvk_path) {
       lib->handle = dlopen(mvk_path, RTLD_NOW | RTLD_LOCAL);
-      fprintf(stderr, "vkr_library_load: dlopen(%s) = %p err=%s\n",
-              mvk_path, lib->handle, lib->handle ? "ok" : dlerror());
    }
    if (lib->handle == NULL)
       lib->handle = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);

@@ -5,6 +5,8 @@
 
 #include "vkr_image.h"
 
+#include <stdio.h>
+
 #include "vkr_image_gen.h"
 #include "vkr_physical_device.h"
 
@@ -114,6 +116,74 @@ vkr_dispatch_vkBindImageMemory2(UNUSED struct vn_dispatch_context *dispatch,
 
    vn_replace_vkBindImageMemory2_args_handle(args);
    args->ret = vk->BindImageMemory2(args->device, args->bindInfoCount, args->pBindInfos);
+
+#ifdef __APPLE__
+   /* After binding, extract MTLTexture for images (likely swapchain).
+    * vkGetMTLTextureMVK is a MoltenVK extension — use GetDeviceProcAddr
+    * since MoltenVK is dlopen'd at runtime (not in RTLD_DEFAULT). */
+   if (args->ret == VK_SUCCESS) {
+      #include <dlfcn.h>
+      typedef void (*PFN_vkGetMTLTextureMVK)(VkImage image, void **pMTLTexture);
+      static PFN_vkGetMTLTextureMVK pfn_getMTLTexture = NULL;
+      static bool tried_load = false;
+      if (!tried_load) {
+         tried_load = true;
+         /* MoltenVK was dlopen'd with RTLD_LOCAL, so RTLD_DEFAULT won't find it.
+          * Re-open with RTLD_NOLOAD to get the handle without loading again. */
+         const char *mvk_path = getenv("VMKIT_MOLTENVK_PATH");
+         if (mvk_path) {
+            void *mvk_handle = dlopen(mvk_path, RTLD_NOW | RTLD_NOLOAD);
+            if (mvk_handle) {
+               pfn_getMTLTexture = (PFN_vkGetMTLTextureMVK)dlsym(mvk_handle, "vkGetMTLTextureMVK");
+               dlclose(mvk_handle);
+            }
+         }
+
+      }
+      if (pfn_getMTLTexture) {
+         /* Get vkGetMTLBufferMVK to find the Metal buffer backing VkDeviceMemory */
+         typedef void (*PFN_vkGetMTLBufferMVK)(VkDeviceMemory memory, void **pMTLBuffer);
+         static PFN_vkGetMTLBufferMVK pfn_getMTLBuffer = NULL;
+         static bool tried_buf = false;
+         if (!tried_buf) {
+            tried_buf = true;
+            const char *mvk_path = getenv("VMKIT_MOLTENVK_PATH");
+            if (mvk_path) {
+               void *mvk_handle = dlopen(mvk_path, RTLD_NOW | RTLD_NOLOAD);
+               if (mvk_handle) {
+                  pfn_getMTLBuffer = (PFN_vkGetMTLBufferMVK)dlsym(mvk_handle, "vkGetMTLBufferMVK");
+                  dlclose(mvk_handle);
+               }
+            }
+
+         }
+
+         /* vmkit_virgl_get_mtl_buffer_contents: ObjC helper that calls [MTLBuffer contents] */
+         extern void *vmkit_virgl_get_mtl_buffer_contents(void *mtl_buffer);
+         extern void vmkit_virgl_track_metal_texture_with_memory(
+            void *vk_image, void *mtl_texture, void *memory_ptr, uint64_t memory_offset);
+         for (uint32_t i = 0; i < args->bindInfoCount; i++) {
+            VkImage image = args->pBindInfos[i].image;
+            VkDeviceMemory memory = args->pBindInfos[i].memory;
+            VkDeviceSize offset = args->pBindInfos[i].memoryOffset;
+            void *mtl_texture = NULL;
+            pfn_getMTLTexture(image, &mtl_texture);
+            if (mtl_texture) {
+               void *mtl_buffer_ptr = NULL;
+               if (pfn_getMTLBuffer) {
+                  void *mtl_buffer = NULL;
+                  pfn_getMTLBuffer(memory, &mtl_buffer);
+                  if (mtl_buffer) {
+                     mtl_buffer_ptr = vmkit_virgl_get_mtl_buffer_contents(mtl_buffer);
+                  }
+               }
+               vmkit_virgl_track_metal_texture_with_memory(
+                  (void *)image, mtl_texture, mtl_buffer_ptr, (uint64_t)offset);
+            }
+         }
+      }
+   }
+#endif
 }
 
 static void

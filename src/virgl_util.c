@@ -146,11 +146,9 @@ const struct log_levels_lut {
    { NULL, 0 },
 };
 
-#ifndef NDEBUG
-static enum virgl_log_level_flags virgl_log_level = VIRGL_LOG_LEVEL_WARNING;
-#else
-static enum virgl_log_level_flags virgl_log_level = VIRGL_LOG_LEVEL_ERROR;
-#endif
+/* Suppress virgl internal logging — it writes to stderr without coordination
+ * with Rust's env_logger, causing terminal offset issues. */
+static enum virgl_log_level_flags virgl_log_level = VIRGL_LOG_LEVEL_SILENT;
 static bool virgl_log_level_initialized = false;
 
 static

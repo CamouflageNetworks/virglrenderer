@@ -5,6 +5,8 @@
 
 #include "vkr_render_pass.h"
 
+#include <stdio.h>
+
 #include "vkr_render_pass_gen.h"
 
 static void
@@ -75,7 +77,9 @@ static void
 vkr_dispatch_vkCreateFramebuffer(struct vn_dispatch_context *dispatch,
                                  struct vn_command_vkCreateFramebuffer *args)
 {
-   vkr_framebuffer_create_and_add(dispatch->data, args);
+   struct vkr_framebuffer *obj = vkr_framebuffer_create_and_add(dispatch->data, args);
+
+   (void)obj;
 }
 
 static void

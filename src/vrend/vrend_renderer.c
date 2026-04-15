@@ -7664,15 +7664,15 @@ int vrend_renderer_init(const struct vrend_if_cbs *cbs, uint32_t flags)
    vrend_state.gl_minor_ver = gl_ver % 10;
 
    if (gles) {
-      virgl_info("gl_version %d - es profile enabled\n", gl_ver);
+
       vrend_state.use_gles = true;
       /* for now, makes the rest of the code use the most GLES 3.x like path */
       vrend_state.use_core_profile = true;
    } else if (gl_ver > 30 && !epoxy_has_gl_extension("GL_ARB_compatibility")) {
-      virgl_info("gl_version %d - core profile enabled\n", gl_ver);
+
       vrend_state.use_core_profile = true;
    } else {
-      virgl_info("gl_version %d - compat profile\n", gl_ver);
+
    }
 
    vrend_state.use_integer = use_integer();
@@ -13005,6 +13005,60 @@ void vrend_renderer_force_ctx_0(void)
    vrend_hw_switch_context(vrend_state.ctx0, true);
 }
 
+#ifdef __APPLE__
+/* Track blob-backed GL textures for periodic refresh. */
+#define VREND_MAX_BLOB_TEXTURES 32
+struct vrend_blob_texture_entry {
+   GLuint gl_id;
+   GLenum target;
+   uint32_t width;
+   uint32_t height;
+   uint32_t format;  /* virgl format */
+   void *blob_data;
+   bool active;
+};
+static struct vrend_blob_texture_entry g_blob_textures[VREND_MAX_BLOB_TEXTURES];
+static int g_blob_texture_count = 0;
+
+static void vrend_macos_track_blob_texture(GLuint gl_id, GLenum target,
+                                     uint32_t width, uint32_t height,
+                                     uint32_t format, void *blob_data)
+{
+   if (g_blob_texture_count >= VREND_MAX_BLOB_TEXTURES) {
+      virgl_warn("vrend_macos: blob texture table full\n");
+      return;
+   }
+   g_blob_textures[g_blob_texture_count++] = (struct vrend_blob_texture_entry){
+      .gl_id = gl_id, .target = target,
+      .width = width, .height = height,
+      .format = format, .blob_data = blob_data,
+      .active = true
+   };
+}
+
+/* Refresh all blob-backed GL textures: re-upload from blob mapped memory.
+ * Must be called with a valid GL context current (e.g. from read_scanout). */
+void vrend_renderer_refresh_blob_textures(void)
+{
+   for (int i = 0; i < g_blob_texture_count; i++) {
+      struct vrend_blob_texture_entry *e = &g_blob_textures[i];
+      if (!e->active || !e->blob_data || e->gl_id == 0)
+         continue;
+
+      GLenum glformat = tex_conv_table[e->format].glformat;
+      GLenum gltype = tex_conv_table[e->format].gltype;
+      if (glformat == 0 || gltype == 0)
+         continue;
+
+      glBindTexture(e->target, e->gl_id);
+      glTexSubImage2D(e->target, 0, 0, 0,
+                      e->width, e->height,
+                      glformat, gltype, e->blob_data);
+      glBindTexture(e->target, 0);
+   }
+}
+#endif /* __APPLE__ */
+
 void vrend_renderer_get_rect(struct pipe_resource *pres,
                              const struct iovec *iov, unsigned int num_iovs,
                              uint32_t offset,
@@ -13408,12 +13462,68 @@ vrend_renderer_pipe_resource_set_type(struct vrend_context *ctx,
       };
       struct vrend_resource *gr;
 
+#ifdef __APPLE__
+      /* macOS: no dmabuf support. Accept blob resources with mapped memory
+       * (private_data set by vkMapMemory in Venus). Create a GL texture and
+       * upload the blob memory into it. The texture will be refreshed from
+       * the blob memory before each scanout read via vrend_macos_refresh_blob_textures(). */
+      if (res->fd_type != VIRGL_RESOURCE_FD_DMABUF && !res->private_data)
+         return EINVAL;
+#else
       if (res->fd_type != VIRGL_RESOURCE_FD_DMABUF)
          return EINVAL;
+#endif
 
       gr = vrend_resource_create(&create_args);
       if (!gr)
          return ENOMEM;
+
+#ifdef __APPLE__
+      /* macOS blob-from-memory path: create a GL texture and upload blob pixels.
+       * The vrend_resource will track the blob pointer for periodic refresh. */
+      if (res->private_data) {
+         gr->target = tgsitargettogltarget(gr->base.target, gr->base.nr_samples);
+         gr->storage_bits |= VREND_STORAGE_GL_TEXTURE;
+
+         glGenTextures(1, &gr->gl_id);
+         glBindTexture(gr->target, gr->gl_id);
+
+         GLenum internalformat = tex_conv_table[args->format].internalformat;
+         GLenum glformat = tex_conv_table[args->format].glformat;
+         GLenum gltype = tex_conv_table[args->format].gltype;
+
+         if (internalformat == 0) {
+            virgl_error("vrend_pipe_resource_set_type(macOS): unknown format %d\n", args->format);
+            FREE(gr);
+            return EINVAL;
+         }
+
+         /* Upload blob memory as texture data. The blob pointer (from
+          * vkMapMemory) contains the Venus-rendered pixels. */
+         glTexImage2D(gr->target, 0, internalformat,
+                      args->width, args->height, 0,
+                      glformat, gltype, res->private_data);
+         glTexParameteri(gr->target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+         glTexParameteri(gr->target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+         glBindTexture(gr->target, 0);
+
+         gr->is_imported = true;
+         gr->blob_data = res->private_data;
+         gr->blob_data_size = res->map_size;
+
+         /* Track for periodic refresh from blob memory */
+         vrend_macos_track_blob_texture(gr->gl_id, gr->target,
+                                         args->width, args->height,
+                                         args->format, res->private_data);
+
+         virgl_warn("vrend_pipe_resource_set_type(macOS): res %d %dx%d fmt=%d gl_id=%u blob=%p\n",
+                   res->res_id, args->width, args->height, args->format, gr->gl_id, res->private_data);
+
+         res->pipe_resource = &gr->base;
+         vrend_ctx_resource_insert(ctx->res_hash, res->res_id, gr);
+         return 0;
+      }
+#endif /* __APPLE__ */
 
 #ifdef HAVE_EPOXY_EGL_H
       if (egl) {
