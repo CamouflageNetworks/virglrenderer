@@ -2102,9 +2102,6 @@ static int vrend_decode_ctx_submit_cmd(struct virgl_context *ctx,
       if (!vrend_check_no_error(gdctx->grctx) && !ret)
          ret = EINVAL;
       if (ret) {
-         /* Log but don't poison the context or abort — continue processing
-          * remaining commands. A single failed command shouldn't kill the
-          * entire rendering context (causes guest segfaults). */
          virgl_error("context %d failed to dispatch %s: %d (continuing)\n",
                gdctx->base.ctx_id, vrend_get_comand_name(cmd), ret);
          ret = 0; /* reset — don't propagate error */

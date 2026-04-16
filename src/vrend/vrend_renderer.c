@@ -2523,7 +2523,11 @@ static GLuint convert_wrap(struct vrend_context *ctx, int wrap)
    case PIPE_TEX_WRAP_CLAMP: if (vrend_state.use_core_profile == false) return GL_CLAMP; else return GL_CLAMP_TO_EDGE;
 
    case PIPE_TEX_WRAP_CLAMP_TO_EDGE: return GL_CLAMP_TO_EDGE;
-   case PIPE_TEX_WRAP_CLAMP_TO_BORDER: return GL_CLAMP_TO_BORDER;
+   case PIPE_TEX_WRAP_CLAMP_TO_BORDER:
+      if (vrend_state.use_gles && !epoxy_has_gl_extension("GL_OES_texture_border_clamp") &&
+          !epoxy_has_gl_extension("GL_EXT_texture_border_clamp"))
+         return GL_CLAMP_TO_EDGE;
+      return GL_CLAMP_TO_BORDER;
 
    case PIPE_TEX_WRAP_MIRROR_REPEAT: return GL_MIRRORED_REPEAT;
    case PIPE_TEX_WRAP_MIRROR_CLAMP:
@@ -3423,6 +3427,14 @@ int vrend_create_vertex_elements_state(struct vrend_context *ctx,
 
       if (desc->nr_channels == 4 && desc->swizzle[0] == PIPE_SWIZZLE_Z)
          v->zyxw_bitmask |= 1 << i;
+
+      /* Track integer attribute bitmasks so the shader translator can emit
+       * ivec4/uvec4 for integer inputs (required on GLES/ANGLE). */
+      if (util_format_is_pure_integer(elements[i].src_format)) {
+         UPDATE_INT_SIGN_MASK(elements[i].src_format, i,
+                              v->signed_int_bitmask,
+                              v->unsigned_int_bitmask);
+      }
    }
 
    ret_handle = vrend_renderer_object_insert(ctx, v, handle,
@@ -7574,6 +7586,14 @@ static bool use_integer(void) {
    if (getenv("VIRGL_USE_INTEGER"))
       return true;
 
+   /* On GLES, integer vertex attributes (glVertexAttribIPointer) require
+    * matching integer shader inputs (ivec4/uvec4). use_integer=true ensures
+    * the shader translator emits the correct types. Without this, the shader
+    * gets vec4 but the attribute is integer, causing GL_INVALID_OPERATION
+    * on strict GLES implementations like ANGLE. */
+   if (epoxy_is_desktop_gl() == 0)
+      return true;
+
    const char * a = (const char *) glGetString(GL_VENDOR);
    if (!a)
        return false;
@@ -11195,8 +11215,8 @@ static void vrend_renderer_blit_int(struct vrend_context *ctx,
       VREND_DEBUG(dbg_blit, ctx, "BLIT_INT: use FBO blit\n");
       vrend_renderer_blit_fbo(ctx, src_res, dst_res, &blit_info);
    } else {
-      blit_info.has_srgb_write_control = has_feature(feat_texture_srgb_decode);
-      blit_info.has_texture_srgb_decode = has_feature(feat_srgb_write_control);
+      blit_info.has_srgb_write_control = has_feature(feat_srgb_write_control);
+      blit_info.has_texture_srgb_decode = has_feature(feat_texture_srgb_decode);
 
       VREND_DEBUG(dbg_blit, ctx, "BLIT_INT: use GL fallback\n");
       vrend_renderer_blit_gl(ctx, src_res, dst_res, &blit_info);
