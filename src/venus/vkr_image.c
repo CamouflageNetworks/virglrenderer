@@ -158,9 +158,9 @@ vkr_dispatch_vkBindImageMemory2(UNUSED struct vn_dispatch_context *dispatch,
 
          }
 
-         /* vmkit_virgl_get_mtl_buffer_contents: ObjC helper that calls [MTLBuffer contents] */
-         extern void *vmkit_virgl_get_mtl_buffer_contents(void *mtl_buffer);
-         extern void vmkit_virgl_track_metal_texture_with_memory(
+         /* avm_virgl_get_mtl_buffer_contents: ObjC helper that calls [MTLBuffer contents] */
+         extern void *avm_virgl_get_mtl_buffer_contents(void *mtl_buffer);
+         extern void avm_virgl_track_metal_texture_with_memory(
             void *vk_image, void *mtl_texture, void *memory_ptr, uint64_t memory_offset);
          for (uint32_t i = 0; i < args->bindInfoCount; i++) {
             VkImage image = args->pBindInfos[i].image;
@@ -174,10 +174,10 @@ vkr_dispatch_vkBindImageMemory2(UNUSED struct vn_dispatch_context *dispatch,
                   void *mtl_buffer = NULL;
                   pfn_getMTLBuffer(memory, &mtl_buffer);
                   if (mtl_buffer) {
-                     mtl_buffer_ptr = vmkit_virgl_get_mtl_buffer_contents(mtl_buffer);
+                     mtl_buffer_ptr = avm_virgl_get_mtl_buffer_contents(mtl_buffer);
                   }
                }
-               vmkit_virgl_track_metal_texture_with_memory(
+               avm_virgl_track_metal_texture_with_memory(
                   (void *)image, mtl_texture, mtl_buffer_ptr, (uint64_t)offset);
             }
          }
