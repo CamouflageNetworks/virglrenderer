@@ -515,6 +515,13 @@ vkr_context_init_device_memory_dispatch(struct vkr_context *ctx)
 void
 vkr_device_memory_release(struct vkr_device_memory *mem)
 {
+#ifdef __APPLE__
+   if (mem->direct_map_ptr) {
+      extern void vmkit_virgl_untrack_blob_sync_by_ptr(void *old_data);
+      vmkit_virgl_untrack_blob_sync_by_ptr(mem->direct_map_ptr);
+      mem->direct_map_ptr = NULL;
+   }
+#endif
    if (mem->gbm_bo)
       vkr_gbm_bo_destroy(mem->gbm_bo);
    if (mem->udmabuf_fd >= 0)

@@ -40,6 +40,12 @@ static void
 vkr_dispatch_vkDestroyImage(struct vn_dispatch_context *dispatch,
                             struct vn_command_vkDestroyImage *args)
 {
+#ifdef __APPLE__
+   if (args->image) {
+      extern void egg_virgl_untrack_metal_texture(void *vk_image);
+      egg_virgl_untrack_metal_texture((void *)args->image);
+   }
+#endif
    vkr_image_destroy_and_remove(dispatch->data, args);
 }
 

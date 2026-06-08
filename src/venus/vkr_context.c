@@ -320,7 +320,11 @@ vkr_context_create_resource_from_shm(struct vkr_context *ctx,
 
    if (!vkr_context_import_resource_internal(ctx, res_id, blob_size,
                                              VIRGL_RESOURCE_FD_SHM, -1, mmap_ptr)) {
+#ifdef __APPLE__
+      free(mmap_ptr);
+#else
       munmap(mmap_ptr, blob_size);
+#endif
       close(fd);
       return false;
    }
