@@ -11,6 +11,7 @@
 #include "vkr_physical_device.h"
 #include "vkr_queue_gen.h"
 
+
 /* Optional callback for syncing device memory blobs after GPU fence completion.
  * Set by the VMM (vmkit) to copy Metal GPU writes to SHM BAR memory. */
 void (*vkr_blob_sync_cb)(void) = NULL;
