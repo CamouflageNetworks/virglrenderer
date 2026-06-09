@@ -432,31 +432,12 @@ vkr_dispatch_vkQueueSubmit2(UNUSED struct vn_dispatch_context *dispatch,
 
    vn_replace_vkQueueSubmit2_args_handle(args);
 
-   /* Diagnostic: log submit details to understand WSI blit */
-   static int s2_log = 0;
-   if (s2_log++ < 200 || s2_log % 500 == 0) {
-      uint32_t total_cmds = 0, total_waits = 0, total_signals = 0;
-      for (uint32_t i = 0; i < args->submitCount; i++) {
-         total_cmds += args->pSubmits[i].commandBufferInfoCount;
-         total_waits += args->pSubmits[i].waitSemaphoreInfoCount;
-         total_signals += args->pSubmits[i].signalSemaphoreInfoCount;
-      }
-      char msg[256];
-      int len = snprintf(msg, sizeof(msg),
-         "vmkit: QueueSubmit2 submits=%u cmds=%u waits=%u sigs=%u fence=%p\n",
-         args->submitCount, total_cmds, total_waits, total_signals,
-         (void *)args->fence);
-      write(2, msg, len);
-   }
-
    mtx_lock(&queue->vk_mutex);
    args->ret =
       vk->QueueSubmit2(args->queue, args->submitCount, args->pSubmits, args->fence);
    mtx_unlock(&queue->vk_mutex);
    if (args->ret != 0) {
-      char msg[128];
-      int len = snprintf(msg, sizeof(msg), "vmkit: QueueSubmit2 FAILED ret=%d\n", args->ret);
-      write(2, msg, len);
+      vkr_log("QueueSubmit2 FAILED ret=%d", args->ret);
    }
 }
 
