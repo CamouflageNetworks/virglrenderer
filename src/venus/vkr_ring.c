@@ -304,9 +304,17 @@ vkr_ring_thread(void *arg)
          }
 
          const uint32_t ring_head = ring->buffer.cur;
-         vkr_ring_read_buffer(ring, ring->cmd, cmd_size);
+         const size_t ring_offset = ring->buffer.cur & ring->buffer.mask;
+         const uint8_t *cmd_data;
+         if (ring_offset + cmd_size <= ring->buffer.size) {
+            cmd_data = ring->buffer.data + ring_offset;
+            ring->buffer.cur += cmd_size;
+         } else {
+            vkr_ring_read_buffer(ring, ring->cmd, cmd_size);
+            cmd_data = ring->cmd;
+         }
 
-         if (!vkr_ring_submit_cmd(ring, ring->cmd, cmd_size, ring_head)) {
+         if (!vkr_ring_submit_cmd(ring, cmd_data, cmd_size, ring_head)) {
             ret = -EINVAL;
             break;
          }
