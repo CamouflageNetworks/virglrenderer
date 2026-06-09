@@ -773,16 +773,20 @@ static void vrend_set_tex_param(struct vrend_resource *src_res,
 
 static void vrend_set_vertex_param(GLuint prog_id)
 {
-   GLuint pos_loc, tc_loc;
+   static GLuint cached_prog = 0;
+   static GLuint cached_pos = 0, cached_tc = 0;
 
-   pos_loc = glGetAttribLocation(prog_id, "arg0");
-   tc_loc = glGetAttribLocation(prog_id, "arg1");
+   if (prog_id != cached_prog) {
+      cached_pos = glGetAttribLocation(prog_id, "arg0");
+      cached_tc = glGetAttribLocation(prog_id, "arg1");
+      cached_prog = prog_id;
+   }
 
-   glVertexAttribPointer(pos_loc, 4, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void *)0);
-   glVertexAttribPointer(tc_loc, 4, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void *)(4 * sizeof(float)));
+   glVertexAttribPointer(cached_pos, 4, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void *)0);
+   glVertexAttribPointer(cached_tc, 4, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void *)(4 * sizeof(float)));
 
-   glEnableVertexAttribArray(pos_loc);
-   glEnableVertexAttribArray(tc_loc);
+   glEnableVertexAttribArray(cached_pos);
+   glEnableVertexAttribArray(cached_tc);
 }
 
 /* implement blitting using OpenGL. */
