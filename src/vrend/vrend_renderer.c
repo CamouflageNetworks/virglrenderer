@@ -1995,6 +1995,8 @@ static struct vrend_linked_shader_program *add_cs_shader_program(struct vrend_co
    list_addtail(&sprog->head, &ctx->sub->cs_programs);
 
    vrend_use_program(sprog);
+   ctx->sub->current_program_id = sprog->id.program;
+   ctx->sub->current_pipeline_id = 0;
 
    bind_sampler_locs(sprog, PIPE_SHADER_COMPUTE, 0);
    bind_ubo_locs(sprog, PIPE_SHADER_COMPUTE, 0);
@@ -2183,6 +2185,13 @@ static struct vrend_linked_shader_program *add_shader_program(struct vrend_sub_c
    sprog->sysvalue_data_cookie = UINT32_MAX;
 
    vrend_use_program(sprog);
+   if (sprog->is_pipeline) {
+      sub_ctx->current_pipeline_id = sprog->id.pipeline;
+      sub_ctx->current_program_id = 0;
+   } else {
+      sub_ctx->current_program_id = sprog->id.program;
+      sub_ctx->current_pipeline_id = 0;
+   }
 
    for (enum pipe_shader_type shader_type = PIPE_SHADER_VERTEX;
         shader_type <= last_shader;
@@ -4852,6 +4861,8 @@ void vrend_clear(struct vrend_context *ctx, unsigned buffers,
       vrend_update_viewport_state(sub_ctx);
 
    vrend_use_program(NULL);
+   sub_ctx->current_program_id = 0;
+   sub_ctx->current_pipeline_id = 0;
 
    glDisable(GL_SCISSOR_TEST);
 
@@ -5836,6 +5847,8 @@ vrend_select_program(struct vrend_sub_context *sub_ctx, uint8_t vertices_per_pat
 
           if (need_rebind) {
              vrend_use_program(prog);
+             sub_ctx->current_pipeline_id = prog->id.pipeline;
+             sub_ctx->current_program_id = 0;
              rebind_ubo_and_sampler_locs(prog, last_shader);
           }
       }
@@ -9376,6 +9389,8 @@ static int vrend_renderer_transfer_write_iov(struct vrend_context *ctx,
       uint32_t layer_stride = info->layer_stride;
 
       vrend_use_program(NULL);
+      ctx->sub->current_program_id = 0;
+      ctx->sub->current_pipeline_id = 0;
 
       if (!stride)
          stride = util_format_get_nblocksx(res->base.format, u_minify(res->base.width0, info->level)) * elsize;
@@ -9797,6 +9812,10 @@ static int vrend_transfer_send_readpixels(struct vrend_context *ctx,
    GLint old_fbo;
 
    vrend_use_program(NULL);
+   if (vrend_state.current_ctx && vrend_state.current_ctx->sub) {
+      vrend_state.current_ctx->sub->current_program_id = 0;
+      vrend_state.current_ctx->sub->current_pipeline_id = 0;
+   }
 
    enum virgl_formats fmt = res->base.format;
 
