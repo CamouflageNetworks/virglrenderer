@@ -13,11 +13,11 @@
 
 
 /* Optional callback for syncing device memory blobs after GPU fence completion.
- * Set by the VMM (vmkit) to copy Metal GPU writes to SHM BAR memory. */
-void (*vkr_blob_sync_cb)(void) = NULL;
+ * Set by the VMM from init thread, read from queue sync thread. */
+_Atomic(void(*)(void)) vkr_blob_sync_cb = NULL;
 /* Fast sync: only small blobs (feedback + UBOs), skips large swapchain buffers.
  * Called from queue sync thread immediately after GPU fence completes. */
-void (*vkr_blob_sync_small_cb)(void) = NULL;
+_Atomic(void(*)(void)) vkr_blob_sync_small_cb = NULL;
 
 static struct vkr_queue_sync *
 vkr_device_alloc_queue_sync(struct vkr_device *dev,
@@ -201,8 +201,9 @@ vkr_queue_thread(void *arg)
        * SHM BAR. Fast path: skips large swapchain buffers to avoid mid-render
        * corruption. This delivers fence feedback immediately after GPU completion
        * instead of waiting for the 5ms timer. */
-      if (vkr_blob_sync_small_cb)
-         vkr_blob_sync_small_cb();
+      void (*small_cb)(void) = atomic_load(&vkr_blob_sync_small_cb);
+      if (small_cb)
+         small_cb();
 
       vkr_queue_sync_retire(queue, sync);
    }

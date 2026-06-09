@@ -517,8 +517,13 @@ vkr_device_memory_release(struct vkr_device_memory *mem)
 {
 #ifdef __APPLE__
    if (mem->direct_map_ptr) {
-      extern void vmkit_virgl_untrack_blob_sync_by_ptr(void *old_data);
-      vmkit_virgl_untrack_blob_sync_by_ptr(mem->direct_map_ptr);
+      extern void egg_virgl_untrack_blob_sync_by_ptr(void *old_data);
+      egg_virgl_untrack_blob_sync_by_ptr(mem->direct_map_ptr);
+      if (mem->device) {
+         struct vn_device_proc_table *vk = &mem->device->proc_table;
+         vk->UnmapMemory(mem->device->base.handle.device,
+                         mem->base.handle.device_memory);
+      }
       mem->direct_map_ptr = NULL;
    }
 #endif
