@@ -141,17 +141,12 @@ vkr_context_submit_fence(struct vkr_context *ctx,
                          uint32_t ring_idx,
                          uint64_t fence_id)
 {
-   fprintf(stderr, "vkr: submit_fence ctx=%u ring=%u fence=%llu\n", ctx->ctx_id, ring_idx, (unsigned long long)fence_id);
-   /* retire fence on cpu timeline directly */
    if (ring_idx == 0) {
-      fprintf(stderr, "vkr: submit_fence ring=0, immediate retire\n");
       ctx->retire_fence(ctx->ctx_id, ring_idx, fence_id);
       return true;
    }
 
    if (ring_idx >= ARRAY_SIZE(ctx->sync_queues) || !ctx->sync_queues[ring_idx]) {
-      fprintf(stderr, "vkr: submit_fence INVALID ring_idx %u (max=%zu)\n",
-              ring_idx, ARRAY_SIZE(ctx->sync_queues));
       vkr_log("submit_fence: invalid ring_idx %u", ring_idx);
       return false;
    }
@@ -167,9 +162,6 @@ vkr_context_submit_fence(struct vkr_context *ctx,
 bool
 vkr_context_submit_cmd(struct vkr_context *ctx, const void *buffer, size_t size)
 {
-   // fprintf(stderr, "vkr: submit_cmd ctx=%u size=%zu\n", ctx->ctx_id, size);
-   vkr_log("submit_cmd: ctx=%u size=%zu", ctx->ctx_id, size);
-
    /* CS error is considered fatal (destroy the context?) */
    if (vkr_context_get_fatal(ctx)) {
       vkr_log("submit_cmd: early bail due to fatal decoder state");
