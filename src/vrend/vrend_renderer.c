@@ -1469,6 +1469,25 @@ static void vrend_use_program(struct vrend_linked_shader_program *program)
    }
 }
 
+static inline void vrend_use_program_check(struct vrend_sub_context *sub_ctx,
+                                           struct vrend_linked_shader_program *program)
+{
+   GLuint id = !program ? 0 :
+                          program->is_pipeline ? program->id.pipeline :
+                                                 program->id.program;
+   bool is_pipeline = program && program->is_pipeline;
+   uint32_t *cached = is_pipeline ? &sub_ctx->current_pipeline_id
+                                  : &sub_ctx->current_program_id;
+   if (id == *cached)
+      return;
+   *cached = id;
+   if (is_pipeline)
+      sub_ctx->current_program_id = 0;
+   else
+      sub_ctx->current_pipeline_id = 0;
+   vrend_use_program(program);
+}
+
 static void vrend_depth_test_enable(struct vrend_sub_context *sub_ctx, bool depth_test_enable)
 {
    if (sub_ctx->depth_test_enabled != depth_test_enable) {
@@ -3164,7 +3183,6 @@ void vrend_set_framebuffer_state(struct vrend_context *ctx,
 {
    struct vrend_surface *surf, *zsurf;
    uint32_t old_num;
-   GLenum status;
    GLint new_height = -1;
    bool new_fbo_origin_upper_left = false;
 
@@ -3247,11 +3265,13 @@ void vrend_set_framebuffer_state(struct vrend_context *ctx,
 
    vrend_hw_emit_framebuffer_state(sub_ctx);
 
+#ifndef NDEBUG
    if (sub_ctx->nr_cbufs > 0 || sub_ctx->zsurf) {
-      status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+      GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
       if (status != GL_FRAMEBUFFER_COMPLETE)
          virgl_error("Failed to complete framebuffer 0x%x %s\n", status, ctx->debug_name);
    }
+#endif
 
    sub_ctx->shader_dirty = true;
    sub_ctx->blend_state_dirty = true;
@@ -5103,15 +5123,9 @@ static void vrend_draw_bind_vertex_legacy(struct vrend_context *ctx,
    enable_bitmask = 0;
    disable_bitmask = ~((1ull << va->count) - 1);
 
-   /* macOS: VAOs are per-GL-context, not shared across CGL contexts.
-    * Ensure a valid VAO is bound — regenerate if needed. */
-   {
-      GLint cur_vao = 0;
-      glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &cur_vao);
-      if (cur_vao == 0) {
-         glGenVertexArrays(1, &ctx->sub->vaoid);
-         glBindVertexArray(ctx->sub->vaoid);
-      }
+   if (ctx->sub->vaoid == 0) {
+      glGenVertexArrays(1, &ctx->sub->vaoid);
+      glBindVertexArray(ctx->sub->vaoid);
    }
 
    for (i = 0; i < (int)va->count; i++) {
@@ -5995,7 +6009,7 @@ int vrend_draw_vbo(struct vrend_context *ctx,
       return 0;
    }
 
-   vrend_use_program(sub_ctx->prog);
+   vrend_use_program_check(sub_ctx, sub_ctx->prog);
 
    if (has_feature(feat_draw_parameters) &&
        sub_ctx->prog->reads_drawid &&
@@ -6004,9 +6018,7 @@ int vrend_draw_vbo(struct vrend_context *ctx,
          sub_ctx->sysvalue_data_cookie++;
    }
 
-   if (vrend_state.use_gles) {
-      /* PIPE_SHADER and TGSI_SHADER have different ordering, so use two
-       * different prefix arrays */
+   if (vrend_state.use_gles && program_select_result == PROGRAMM_NEW) {
       for (enum pipe_shader_type i = PIPE_SHADER_VERTEX; i < PIPE_SHADER_COMPUTE; ++i) {
          if (sub_ctx->prog->gles_use_query_texturelevel_mask & (1 << i)) {
             char loc_name[32];
@@ -6016,7 +6028,6 @@ int vrend_draw_vbo(struct vrend_context *ctx,
          } else {
             sub_ctx->prog->tex_levels_uniform_id[i] = -1;
          }
-
       }
    }
 
@@ -6271,7 +6282,7 @@ void vrend_launch_grid(struct vrend_context *ctx,
       return;
    }
 
-   vrend_use_program(sub_ctx->prog);
+   vrend_use_program_check(sub_ctx, sub_ctx->prog);
 
    vrend_set_active_pipeline_stage(sub_ctx->prog, PIPE_SHADER_COMPUTE);
    vrend_draw_bind_ubo_shader(sub_ctx, PIPE_SHADER_COMPUTE, 0);
@@ -9716,10 +9727,10 @@ static void do_readpixels(struct vrend_resource *res,
                           GLenum format, GLenum type,
                           GLsizei bufSize, void *data)
 {
-   GLuint fb_id;
-
-   glGenFramebuffers(1, &fb_id);
-   glBindFramebuffer(GL_FRAMEBUFFER, fb_id);
+   static GLuint readback_fb_id = 0;
+   if (!readback_fb_id)
+      glGenFramebuffers(1, &readback_fb_id);
+   glBindFramebuffer(GL_FRAMEBUFFER, readback_fb_id);
 
    vrend_fb_bind_texture(res, idx, level, layer);
 
@@ -9765,7 +9776,6 @@ static void do_readpixels(struct vrend_resource *res,
    else
       glReadPixels(x, y, width, height, format, type, data);
 
-   glDeleteFramebuffers(1, &fb_id);
 }
 
 static int vrend_transfer_send_readpixels(struct vrend_context *ctx,
