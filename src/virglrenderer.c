@@ -371,6 +371,8 @@ int virgl_renderer_transfer_write_iov(uint32_t handle,
       if (!ctx)
          return EINVAL;
 
+      if (!ctx->transfer_3d)
+         return EINVAL;
       return ctx->transfer_3d(ctx, res, &transfer_info,
                               VIRGL_TRANSFER_TO_HOST);
    } else {
@@ -410,6 +412,8 @@ int virgl_renderer_transfer_read_iov(uint32_t handle, uint32_t ctx_id,
       if (!ctx)
          return EINVAL;
 
+      if (!ctx->transfer_3d)
+         return EINVAL;
       return ctx->transfer_3d(ctx, res, &transfer_info,
                               VIRGL_TRANSFER_FROM_HOST);
    } else {
@@ -467,6 +471,11 @@ int virgl_renderer_context_create_fence(uint32_t ctx_id,
       return -EINVAL;
 
    assert(state.cbs->version >= 3 && state.cbs->write_context_fence);
+   /* APIR contexts have no virgl fence path (completion is signaled via the
+      reply ring), so submit_fence is NULL — treat as a successful no-op.
+      Defensive: optional vtable callbacks must be NULL-checked before calling. */
+   if (!ctx->submit_fence)
+      return 0;
    return ctx->submit_fence(ctx, flags, ring_idx, fence_id);
 }
 
@@ -477,7 +486,8 @@ void virgl_renderer_context_poll(uint32_t ctx_id)
    if (!ctx)
       return;
 
-   ctx->retire_fences(ctx);
+   if (ctx->retire_fences)
+      ctx->retire_fences(ctx);
 }
 
 int virgl_renderer_context_get_poll_fd(uint32_t ctx_id)
@@ -486,6 +496,8 @@ int virgl_renderer_context_get_poll_fd(uint32_t ctx_id)
    if (!ctx)
       return -1;
 
+   if (!ctx->get_fencing_fd)
+      return -1;
    return ctx->get_fencing_fd(ctx);
 }
 
@@ -797,8 +809,8 @@ virgl_context_foreach_retire_fences(struct virgl_context *ctx,
        ctx->capset_id != VIRTGPU_DRM_CAPSET_VIRGL2 &&
        !(state.flags & VIRGL_RENDERER_ASYNC_FENCE_CB))
    {
-      assert(ctx->retire_fences);
-      ctx->retire_fences(ctx);
+      if (ctx->retire_fences)
+         ctx->retire_fences(ctx);
    }
    return true;
 }
