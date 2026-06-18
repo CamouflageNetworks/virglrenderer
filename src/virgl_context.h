@@ -47,6 +47,11 @@ struct virgl_context_blob {
    } u;
 
    uint32_t map_info;
+#ifdef __APPLE__
+   /* APIR (API Remoting): direct host pointer for an Apple blob resource,
+      which has no fd — the apir renderer mmaps and stores it here. */
+   uint64_t map_ptr;
+#endif
 
    /* enum virgl_formats the exporting context actually created this
     * blob's texture with, or 0 if unknown.  See virgl_resource. */
