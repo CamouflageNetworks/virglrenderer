@@ -49,6 +49,13 @@ apir_virgl_context_resource_table_fini(struct apir_virgl_context *ctx)
 static void
 apir_virgl_add_context(struct apir_virgl_context *ctx)
 {
+   /* The global `contexts` list head is in BSS (zero-initialized), so its links
+    * are NULL until first use — nothing calls list_inithead at APIR init in the
+    * in-process (egg) path. Initialize on first add (after list_inithead, .next
+    * points at the head, so it is never NULL again). Context creation is
+    * serialized on the gl-thread, so no lock is needed. */
+   if (!contexts.next)
+      list_inithead(&contexts);
    list_addtail(&ctx->head, &contexts);
 }
 
