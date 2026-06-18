@@ -352,6 +352,10 @@ endif
 
 with_venus = get_option('venus')
 with_neptune = get_option('neptune')
+with_apir = get_option('apir')
+if with_apir
+   conf_data.set('ENABLE_APIR', 1)
+endif
 with_render_server = ''
 if with_venus or with_neptune
    with_render_server = get_option('render-server-mode')

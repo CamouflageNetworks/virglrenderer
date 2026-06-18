@@ -261,6 +261,10 @@ if metal_dep.found()
    virgl_depends += [metal_dep, dependency('appleframeworks', modules : ['Foundation'])]
 endif
 
+if with_apir
+   virgl_sources += apir_sources
+endif
+
 if with_venus
    virgl_sources += venus_sources
    virgl_sources += venus_codegen

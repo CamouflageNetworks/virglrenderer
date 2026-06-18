@@ -37,6 +37,7 @@
 #mesondefine ENABLE_GBM_ALLOCATION
 #mesondefine ENABLE_VENUS
 #mesondefine ENABLE_NEPTUNE
+#mesondefine ENABLE_APIR
 #mesondefine ENABLE_VULKAN_DLOAD
 #mesondefine ENABLE_VULKAN_PRELOAD
 #mesondefine ENABLE_GBM
