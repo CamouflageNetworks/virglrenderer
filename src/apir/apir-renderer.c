@@ -216,6 +216,7 @@ bool apir_renderer_create_resource(uint32_t ctx_id,
    res->res_id = res_id;
    res->fd_type = blob.type;
    res->size = blob_size;
+   res->externally_mapped = false;
 
    if (blob.type == VIRGL_RESOURCE_FD_SHM) {
       res->fd = blob.u.fd;
@@ -252,6 +253,18 @@ bool apir_renderer_create_resource(uint32_t ctx_id,
    return true;
 }
 
+
+/* Redirect an APIR resource's data to host-owned memory (egg's SHM-BAR HVA), so
+ * the host backend and the guest share one physical buffer. Returns false when
+ * ctx_id is not an APIR context, letting the caller fall back to the Venus
+ * redirect path. */
+bool apir_renderer_redirect_resource(uint32_t ctx_id, uint32_t res_id, void *new_data)
+{
+   struct apir_context *ctx = apir_context_lookup(ctx_id);
+   if (!ctx)
+      return false;
+   return apir_resource_redirect_data(ctx, res_id, new_data);
+}
 
 bool apir_renderer_import_resource(uint32_t ctx_id,
                                    uint32_t res_id,

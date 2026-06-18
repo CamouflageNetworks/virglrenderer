@@ -4,9 +4,11 @@
 #include "virtgpu_drm.h"
 
 #include "virgl_context.h"
+#include "virgl_resource.h"
 #include "apir-virgl-context.h"
 #include "apir-context.h"
 #include "apir-renderer.h"
+#include "apir-resource.h"
 
 struct list_head contexts;
 
@@ -200,6 +202,24 @@ apir_virgl_context_submit_cmd(struct virgl_context *base, const void *buffer, si
    return 0;
 }
 
+/* APIR Apple blobs are OPAQUE_HANDLE with no fd. virgl_renderer_resource_map
+ * reaches this for OPAQUE_HANDLE resources; we return the host pointer the
+ * apir_context recorded at create time (res->u.data), so egg can then map those
+ * same pages into the guest GPA. Without this, the OPAQUE_HANDLE path would try
+ * to export a dmabuf (unavailable on macOS) and fail. */
+static void *
+apir_virgl_context_resource_map(struct virgl_context *base,
+                                struct virgl_resource *res,
+                                UNUSED void *addr,
+                                UNUSED int32_t prot,
+                                UNUSED int32_t flags)
+{
+   struct apir_context *actx = apir_context_lookup(base->ctx_id);
+   if (!actx)
+      return NULL;
+   return (void *)apir_resource_get_shmem_ptr(actx, res->res_id);
+}
+
 static void
 apir_virgl_context_init_base(struct apir_virgl_context *ctx)
 {
@@ -208,6 +228,7 @@ apir_virgl_context_init_base(struct apir_virgl_context *ctx)
    ctx->base.detach_resource = apir_virgl_context_detach_resource;
    ctx->base.get_blob = apir_virgl_context_get_blob;
    ctx->base.submit_cmd = apir_virgl_context_submit_cmd;
+   ctx->base.resource_map = apir_virgl_context_resource_map;
 
    ctx->base.transfer_3d = NULL;
    ctx->base.get_fencing_fd = NULL;
