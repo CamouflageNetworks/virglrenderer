@@ -24,6 +24,11 @@ struct apir_resource {
    } u;
 
    size_t size;
+
+   /* When true, u.data points at memory owned by the host hypervisor (egg's
+    * SHM-BAR HVA, installed via apir_resource_redirect_data) rather than this
+    * resource's own anonymous mmap. Destroy must NOT munmap it. */
+   bool externally_mapped;
 };
 
 static inline struct apir_resource *
@@ -44,6 +49,11 @@ apir_resource_get(struct apir_context *ctx, uint32_t res_id)
 void apir_resource_destroy(struct apir_context *ctx, uint32_t res_id);
 void apir_resource_destroy_locked(struct apir_resource *res);
 volatile uint32_t *apir_resource_get_shmem_ptr(struct apir_context *ctx, uint32_t res_id);
+
+/* Point a resource's data at host-owned memory (egg's SHM-BAR HVA), freeing the
+ * resource's original anonymous mmap. After this, the host APIR backend and the
+ * guest (which mmaps the same SHM BAR) share one physical buffer. */
+bool apir_resource_redirect_data(struct apir_context *ctx, uint32_t res_id, void *new_data);
 
 bool apir_resource_create_blob(uint64_t blob_id,
                                uint64_t blob_size,

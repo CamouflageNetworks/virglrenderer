@@ -35,6 +35,7 @@ bool apir_renderer_import_resource(uint32_t ctx_id,
                                    uint64_t size);
 
 void apir_renderer_destroy_resource(uint32_t ctx_id, uint32_t res_id);
+bool apir_renderer_redirect_resource(uint32_t ctx_id, uint32_t res_id, void *new_data);
 size_t apir_renderer_get_capset(void *capset, uint32_t flags);
 
 #define APIR_VA_PRINT(prefix, format)               \

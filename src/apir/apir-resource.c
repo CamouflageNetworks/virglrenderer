@@ -48,6 +48,26 @@ apir_resource_get_shmem_ptr(struct apir_context *ctx, uint32_t res_id) {
 }
 
 bool
+apir_resource_redirect_data(struct apir_context *ctx, uint32_t res_id, void *new_data)
+{
+   struct apir_resource *res = apir_resource_get(ctx, res_id);
+   if (!res) {
+      APIR_ERROR("%s: failed to find resource: invalid res_id %u", __func__, res_id);
+      return false;
+   }
+
+   /* Mirror the Venus redirect (vkr_redirect_resource_data): just repoint the
+    * resource at the host-owned SHM-BAR HVA. We do NOT munmap the original
+    * anonymous mapping here — it is still referenced by the virgl_resource
+    * (res->mapped) and released through the normal resource_unmap path, so
+    * munmapping it here would risk a double-unmap. externally_mapped ensures
+    * destroy never munmaps the new (host-owned) pointer. */
+   res->u.data = (uint8_t *)new_data;
+   res->externally_mapped = true;
+   return true;
+}
+
+bool
 apir_resource_create_blob(uint64_t blob_id,
                           uint64_t blob_size,
                           uint32_t blob_flags,
@@ -107,15 +127,18 @@ apir_resource_create_blob(uint64_t blob_id,
 void
 apir_resource_destroy_locked(struct apir_resource *res)
 {
-   // Clean up resource-specific data
-   if (res->fd_type == VIRGL_RESOURCE_FD_SHM && res->u.data) {
-      munmap(res->u.data, res->size);
-   }
+   // Clean up resource-specific data. Skip if the data was redirected to
+   // host-owned memory (egg's SHM BAR) — that is not ours to munmap.
+   if (!res->externally_mapped) {
+      if (res->fd_type == VIRGL_RESOURCE_FD_SHM && res->u.data) {
+         munmap(res->u.data, res->size);
+      }
 #ifdef __APPLE__
-   else if (res->fd_type == VIRGL_RESOURCE_OPAQUE_HANDLE && res->u.data) {
-      munmap(res->u.data, res->size);
-   }
+      else if (res->fd_type == VIRGL_RESOURCE_OPAQUE_HANDLE && res->u.data) {
+         munmap(res->u.data, res->size);
+      }
 #endif
+   }
 
    // Close file descriptor (only for SHM blobs, OPAQUE_HANDLE has fd == -1)
    if (res->fd >= 0) {

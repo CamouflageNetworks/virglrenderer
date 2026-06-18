@@ -605,11 +605,20 @@ void virgl_renderer_get_cap_set(uint32_t cap_set, uint32_t *max_ver,
       break;
    case VIRTGPU_DRM_CAPSET_APIR:
       *max_ver = 0;
-#if ENABLE_APIR && !ENABLE_RENDER_SERVER
-      *max_size = apir_get_capset(cap_set, NULL);
-#else
-      *max_size = proxy_get_capset(cap_set, NULL);
+      /* In-process (egg) build: the proxy/render-server is never initialized, so
+         route to the APIR renderer at runtime when APIR is active — mirroring the
+         Venus case below. The old compile-time guard sent this to proxy_get_capset
+         whenever ENABLE_RENDER_SERVER was set (venus=true pulls it in), which 0's
+         the capset in-process. */
+#if ENABLE_APIR
+      if (state.apir_initialized)
+         *max_size = apir_get_capset(cap_set, NULL);
+      else
 #endif
+      if (state.proxy_initialized)
+         *max_size = proxy_get_capset(cap_set, NULL);
+      else
+         *max_size = 0;
       break;
    case VIRTGPU_DRM_CAPSET_VENUS:
       *max_ver = 0;
