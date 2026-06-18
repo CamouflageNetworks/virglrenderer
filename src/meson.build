@@ -215,6 +215,10 @@ if have_glx
    virgl_depends += [glx_dep]
 endif
 
+if with_apir
+   virgl_sources += apir_sources
+endif
+
 if with_venus
    virgl_sources += venus_sources
    virgl_sources += venus_codegen
