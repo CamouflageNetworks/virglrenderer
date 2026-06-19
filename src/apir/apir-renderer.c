@@ -119,6 +119,15 @@ static inline bool apir_renderer_dispatch_command(struct apir_context *ctx)
       cmd_type -= VENUS_COMMAND_TYPE_LENGTH;
    }
 
+   /* DIAG: confirm the guest's commands actually reach the host dispatcher.
+    * Gated on dispatch_fn → logs HandShake/LoadLibrary (pre-backend) only, so the
+    * per-op Forward flood stays silent. A lone "HandShake" with no "LoadLibrary"
+    * after it means the guest never saw the handshake reply (reply-ring stuck). */
+   if (!ctx->dispatch_fn) {
+      APIR_INFO("apir cmd received: %s (ctx=%u flags=%u)",
+                apir_command_name(cmd_type), ctx->ctx_id, (unsigned)cmd_flags);
+   }
+
    if (cmd_type < APIR_COMMAND_TYPE_LENGTH && apir_protocol_dispatch_command(cmd_type)) {
       apir_protocol_dispatch_command(cmd_type)(ctx, cmd_flags);
    }

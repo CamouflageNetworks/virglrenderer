@@ -27,6 +27,17 @@ get_response_stream(struct apir_context *ctx, volatile uint32_t **atomic_reply_n
 
    struct apir_resource *reply_res = apir_resource_get(ctx, reply_res_id);
 
+   /* DIAG: reply-ring target, handshake/loadlibrary phase only (gated on
+    * dispatch_fn so per-op Forward stays silent). u.data is where the host writes
+    * the reply: if externally_mapped is true it's egg's redirected SHM-BAR HVA
+    * (guest-visible); if false it's this resource's private mmap (guest can't see
+    * it). Diff this against egg's "SHM-redirect res N to <HVA> (GPA ...)" line. */
+   if (reply_res && !ctx->dispatch_fn) {
+      APIR_INFO("apir reply-ring: res_id=%u u.data=%p externally_mapped=%d size=%zu notif_before=%u",
+                reply_res_id, (void *)reply_res->u.data, (int)reply_res->externally_mapped,
+                reply_res->size, (unsigned)**atomic_reply_notif_p);
+   }
+
    /*
     * Prepare the reply encoder and notif bit
     */
@@ -59,6 +70,15 @@ send_response(struct apir_context *ctx,
     */
 
    *atomic_reply_notif = reply_notif;
+
+   /* DIAG: confirm the host wrote the reply notif, and to which address. Gated on
+    * dispatch_fn → handshake/loadlibrary only. readback proves the store landed
+    * in the host's own mapping; compare the address to egg's redirected SHM HVA
+    * to know whether the guest can see it. */
+   if (!ctx->dispatch_fn) {
+      APIR_INFO("apir reply sent: notif=%u -> %p (readback=%u)",
+                reply_notif, (void *)atomic_reply_notif, (unsigned)*atomic_reply_notif);
+   }
 
    /*
     * Reset the decoder, so that the next call starts at the beginning of the
