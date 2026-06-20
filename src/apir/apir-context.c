@@ -43,6 +43,11 @@ apir_context_transition_populate_config(struct apir_context *ctx) {
    APIR_ADD_CONFIG_KV("ggml.library.reg", getenv("APIR_LLAMA_CPP_GGML_LIBRARY_REG"));
    APIR_ADD_CONFIG_KV("ggml.library.init", getenv("APIR_LLAMA_CPP_GGML_LIBRARY_INIT"));
 
+   // Host-visible virtio-gpu window size (bytes), set by egg from the resolved
+   // toml host_mem. The backend clamps the GPU memory it advertises to this so
+   // the guest never sees more mappable device memory than the SHM BAR holds.
+   APIR_ADD_CONFIG_KV("gpu.shmem_window", getenv("APIR_GPU_SHMEM_WINDOW_BYTES"));
+
 #undef APIR_ADD_CONFIG_KV
 
    ctx->configured = true;
