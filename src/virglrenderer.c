@@ -198,9 +198,11 @@ void virgl_renderer_fill_caps(uint32_t set, uint32_t version,
    case VIRTGPU_DRM_CAPSET_APIR:
       if (state.proxy_initialized)
          proxy_get_capset(set, caps);
+#ifdef ENABLE_APIR
       else if (state.apir_initialized) {
          apir_get_capset(set, caps);
       }
+#endif
       break;
    case VIRTGPU_DRM_CAPSET_DRM:
       if (state.drm_initialized)
@@ -261,8 +263,10 @@ int virgl_renderer_context_create_with_flags(uint32_t ctx_id,
    case VIRTGPU_DRM_CAPSET_APIR:
       if (state.proxy_initialized)
          ctx = proxy_context_create(ctx_id, ctx_flags, nlen, name);
+#ifdef ENABLE_APIR
       else if (state.apir_initialized)
          ctx = apir_virgl_context_create(ctx_id, name);
+#endif
       else
          return EINVAL;
 
@@ -1164,6 +1168,7 @@ int virgl_renderer_init(void *cookie, int flags, struct virgl_renderer_callbacks
    }
 #endif
 
+#ifdef ENABLE_APIR
    flags = flags | VIRGL_RENDERER_APIR;
    if (!state.apir_initialized && (flags & VIRGL_RENDERER_APIR)) {
       ret = apir_renderer_init();
@@ -1172,6 +1177,7 @@ int virgl_renderer_init(void *cookie, int flags, struct virgl_renderer_callbacks
       }
       state.apir_initialized = true;
    }
+#endif
 
    if ((flags & VIRGL_RENDERER_ASYNC_FENCE_CB) &&
        (flags & VIRGL_RENDERER_DRM)) {
