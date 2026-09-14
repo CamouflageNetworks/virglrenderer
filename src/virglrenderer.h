@@ -159,11 +159,6 @@ struct virgl_renderer_callbacks {
 /* Video encode/decode */
 #define VIRGL_RENDERER_USE_VIDEO     (1 << 11)
 
-
-/* Enable APIR trampoline.
- */
-#define VIRGL_RENDERER_APIR         (1 << 12)
-
 #endif /* VIRGL_RENDERER_UNSTABLE_APIS */
 
 
@@ -177,6 +172,13 @@ struct virgl_renderer_callbacks {
 
 /* Enable Neptune renderer (D3D11/D3D12 virtualization). */
 #define VIRGL_RENDERER_NEPTUNE       (1 << 15)
+
+/* Enable APIR trampoline (API Remoting, capset VIRTGPU_DRM_CAPSET_APIR).
+ * Was (1 << 12) on the pre-neptune fork; that bit is
+ * VIRGL_RENDERER_NATIVE_SHARE_TEXTURE upstream, so embedders must take the
+ * value from this header rather than hardcoding it.
+ */
+#define VIRGL_RENDERER_APIR          (1 << 16)
 
 VIRGL_EXPORT int virgl_renderer_init(void *cookie, int flags, struct virgl_renderer_callbacks *cb);
 VIRGL_EXPORT void virgl_renderer_poll(void); /* force fences */
