@@ -373,10 +373,14 @@ render_state_create_resource(uint32_t ctx_id,
    SCOPE_LOCK_RENDERER();
    switch (ctx->backend) {
 #ifdef ENABLE_VENUS
-   case RENDER_BACKEND_VENUS:
+   case RENDER_BACKEND_VENUS: {
+      /* only meaningful for the in-process macOS path; blobs cross the
+       * server socket as fds */
+      uint64_t map_ptr = 0;
       return vkr_renderer_create_resource(ctx_id, res_id, blob_id, blob_size, blob_flags,
-                                          out_fd_type, out_res_fd, out_map_info,
+                                          out_fd_type, out_res_fd, out_map_info, &map_ptr,
                                           out_vulkan_info);
+   }
 #endif
 #ifdef ENABLE_NEPTUNE
    case RENDER_BACKEND_NEPTUNE:

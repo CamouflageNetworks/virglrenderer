@@ -107,6 +107,7 @@ venus_sources = [
    'venus/vkr_renderer.c',
    'venus/vkr_ring.c',
    'venus/vkr_transport.c',
+   'venus/vkr_vmm_hooks.c',
 ]
 
 venus_codegen = custom_target(
