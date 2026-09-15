@@ -83,6 +83,13 @@ proxy_server_spawn(const char *exec_path, char *const argv[], int remote_fd)
    posix_spawn_file_actions_addinherit_np(&file_actions, STDOUT_FILENO);
    posix_spawn_file_actions_addinherit_np(&file_actions, STDERR_FILENO);
    posix_spawn_file_actions_addinherit_np(&file_actions, remote_fd);
+   /* egg: shared hostmem window (see render_protocol.h hostmem_offset) */
+   const char *hostmem_fd_env = getenv("EGG_HOSTMEM_FD");
+   if (hostmem_fd_env) {
+      int hostmem_fd = atoi(hostmem_fd_env);
+      if (hostmem_fd > 2)
+         posix_spawn_file_actions_addinherit_np(&file_actions, hostmem_fd);
+   }
 
    pid_t pid;
    int ret = posix_spawn(&pid, exec_path, &file_actions, &attr, argv,

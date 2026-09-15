@@ -148,6 +148,14 @@ struct render_context_op_create_resource_request {
    uint64_t blob_id;
    uint64_t blob_size;
    uint32_t blob_flags; /* VIRGL_RENDERER_BLOB_FLAG_* */
+   /* egg: byte offset inside the shared hostmem window (EGG_HOSTMEM_FD) the
+    * guest mapped this blob at, or UINT64_MAX. A Neptune shm blob with an
+    * offset is placed AT window+offset instead of a private memfd, so the
+    * guest's BAR view and the render server share the pages with no
+    * per-blob hv_vm_map (the cross-process form of the Venus BAR redirect;
+    * needed because Apple's 16 KiB stage-2 granule cannot map the 4 KiB
+    * offsets the Windows KMD hands out). */
+   uint64_t hostmem_offset;
 };
 
 struct render_context_op_create_resource_reply {

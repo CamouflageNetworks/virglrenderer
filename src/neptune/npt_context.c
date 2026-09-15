@@ -64,7 +64,7 @@ npt_resource_free(struct npt_resource *res)
 {
    switch (res->fd_type) {
    case VIRGL_RESOURCE_FD_SHM:
-      if (res->u.data && !res->iov_owned)
+      if (res->u.data && !res->iov_owned && !res->in_hostmem)
          munmap(res->u.data, res->size);
       if (res->u.fd >= 0)
          close(res->u.fd);
@@ -1206,23 +1206,38 @@ npt_context_create_resource(struct npt_context *ctx,
                             uint64_t blob_id,
                             uint64_t blob_size,
                             UNUSED uint32_t blob_flags,
+                            uint64_t hostmem_offset,
                             struct virgl_context_blob *out_blob)
 {
    if (blob_id == 0) {
-      /* SHM resource (ring buffer or generic shared memory). */
-      int fd = os_create_anonymous_file(blob_size, "npt-shmem");
-      if (fd < 0)
-         return false;
+      /* SHM resource (ring buffer or generic shared memory). Placed in the
+       * VMM's shared hostmem window when the guest already told us where
+       * it maps the blob (egg); otherwise a private memfd. */
+      void *data;
+      int fd;
+      int hostmem_fd = -1;
+      bool in_hostmem = npt_hostmem_place(hostmem_offset, blob_size, &data, &hostmem_fd);
+      if (in_hostmem) {
+         fd = dup(hostmem_fd);
+         if (fd < 0)
+            return false;
+         memset(data, 0, blob_size);
+      } else {
+         fd = os_create_anonymous_file(blob_size, "npt-shmem");
+         if (fd < 0)
+            return false;
 
-      void *data = mmap(NULL, blob_size, PROT_WRITE | PROT_READ, MAP_SHARED, fd, 0);
-      if (data == MAP_FAILED) {
-         close(fd);
-         return false;
+         data = mmap(NULL, blob_size, PROT_WRITE | PROT_READ, MAP_SHARED, fd, 0);
+         if (data == MAP_FAILED) {
+            close(fd);
+            return false;
+         }
       }
 
       struct npt_resource *res = calloc(1, sizeof(*res));
       if (!res) {
-         munmap(data, blob_size);
+         if (!in_hostmem)
+            munmap(data, blob_size);
          close(fd);
          return false;
       }
@@ -1231,6 +1246,7 @@ npt_context_create_resource(struct npt_context *ctx,
       res->fd_type = VIRGL_RESOURCE_FD_SHM;
       res->size = blob_size;
       res->u.data = data;
+      res->in_hostmem = in_hostmem;
 
 #ifdef __linux__
       /* Seal against shrink so the memfd can back a udmabuf for a D3D12
@@ -1253,7 +1269,8 @@ npt_context_create_resource(struct npt_context *ctx,
       if (_mesa_hash_table_search(ctx->resource_table, &res->res_id)) {
          mtx_unlock(&ctx->resource_mutex);
          npt_log("create_resource: duplicate res_id %u", res_id);
-         munmap(data, blob_size);
+         if (!in_hostmem)
+            munmap(data, blob_size);
          if (res->u.fd >= 0)
             close(res->u.fd);
          close(fd);

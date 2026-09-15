@@ -50,6 +50,7 @@ struct npt_resource {
 
    enum virgl_resource_fd_type fd_type;
    bool iov_owned; /* data borrowed from IOV: don't munmap */
+   bool in_hostmem; /* data lives in the shared hostmem window: don't munmap */
 
    /* A struct, not a union: an imported shm resource keeps BOTH its
     * mapping (ring/feedback/transfer windows read data) and its fd
@@ -270,6 +271,7 @@ npt_context_create_resource(struct npt_context *ctx,
                             uint64_t blob_id,
                             uint64_t blob_size,
                             uint32_t blob_flags,
+                            uint64_t hostmem_offset,
                             struct virgl_context_blob *out_blob);
 
 bool

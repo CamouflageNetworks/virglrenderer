@@ -17,6 +17,10 @@
 #include "npt_context.h"
 #include "npt_library.h"
 #include "npt_profile.h"
+#include <sys/mman.h>
+#include <errno.h>
+#include <string.h>
+#include <inttypes.h>
 
 struct npt_renderer_state {
    const struct npt_renderer_callbacks *cbs;
@@ -27,6 +31,52 @@ struct npt_renderer_state {
 };
 
 static struct npt_renderer_state npt_state;
+
+/* egg: the VMM's hostmem BAR backing, shared with this process as a
+ * file descriptor (EGG_HOSTMEM_FD/EGG_HOSTMEM_SIZE) and mapped whole once.
+ * Blob creates that carry a hostmem_offset live at window+offset. */
+static struct {
+   int fd;
+   void *ptr;
+   uint64_t size;
+} npt_hostmem = { .fd = -1 };
+
+static void
+npt_hostmem_init(void)
+{
+   const char *fd_env = getenv("EGG_HOSTMEM_FD");
+   const char *size_env = getenv("EGG_HOSTMEM_SIZE");
+   if (!fd_env || !size_env)
+      return;
+   int fd = atoi(fd_env);
+   uint64_t size = strtoull(size_env, NULL, 0);
+   if (fd < 0 || !size)
+      return;
+   void *ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+   if (ptr == MAP_FAILED) {
+      npt_log("hostmem: mmap(fd=%d, %" PRIu64 " bytes) failed: %s", fd, size, strerror(errno));
+      return;
+   }
+   npt_hostmem.fd = fd;
+   npt_hostmem.ptr = ptr;
+   npt_hostmem.size = size;
+   npt_log("hostmem: shared window fd=%d size=%" PRIu64 " MiB mapped at %p", fd, size >> 20, ptr);
+}
+
+bool
+npt_hostmem_place(uint64_t offset, uint64_t size, void **out_ptr, int *out_fd)
+{
+   if (offset == UINT64_MAX || !npt_hostmem.ptr)
+      return false;
+   if (offset > npt_hostmem.size || size > npt_hostmem.size - offset) {
+      npt_log("hostmem: blob offset %" PRIu64 " size %" PRIu64 " outside the %" PRIu64 "-byte window",
+              offset, size, npt_hostmem.size);
+      return false;
+   }
+   *out_ptr = (uint8_t *)npt_hostmem.ptr + offset;
+   *out_fd = npt_hostmem.fd;
+   return true;
+}
 
 /* Whether the D3D12 backend library exists and exports D3D12CreateDevice.
  *
@@ -135,6 +185,7 @@ npt_renderer_init(UNUSED uint32_t flags, const struct npt_renderer_callbacks *cb
       virgl_log_set_handler(cbs->debug_logger, NULL, NULL);
 
    npt_library_init(&npt_state.library);
+   npt_hostmem_init();
 
    list_inithead(&npt_state.contexts);
 
@@ -263,6 +314,7 @@ npt_renderer_create_resource(uint32_t ctx_id,
                              uint64_t blob_id,
                              uint64_t blob_size,
                              uint32_t blob_flags,
+                             uint64_t hostmem_offset,
                              enum virgl_resource_fd_type *out_fd_type,
                              int *out_res_fd,
                              uint32_t *out_map_info,
@@ -273,7 +325,8 @@ npt_renderer_create_resource(uint32_t ctx_id,
       return false;
 
    struct virgl_context_blob blob;
-   if (!npt_context_create_resource(ctx, res_id, blob_id, blob_size, blob_flags, &blob))
+   if (!npt_context_create_resource(ctx, res_id, blob_id, blob_size, blob_flags,
+                                    hostmem_offset, &blob))
       return false;
 
    *out_fd_type = blob.type;

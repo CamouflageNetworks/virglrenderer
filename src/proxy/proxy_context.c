@@ -440,6 +440,10 @@ add_required_seals_to_fd(int fd)
 #endif
 }
 
+/* Set by virgl_renderer_set_blob_hostmem_offset() right before the
+ * virgl_renderer_resource_create_blob() it applies to; consumed once. */
+_Thread_local uint64_t proxy_next_blob_hostmem_offset = UINT64_MAX;
+
 static int
 proxy_context_get_blob(struct virgl_context *base,
                        uint32_t res_id,
@@ -454,12 +458,15 @@ proxy_context_get_blob(struct virgl_context *base,
     */
    struct proxy_context *ctx = (struct proxy_context *)base;
 
+   const uint64_t hostmem_offset = proxy_next_blob_hostmem_offset;
+   proxy_next_blob_hostmem_offset = UINT64_MAX;
    const struct render_context_op_create_resource_request req = {
       .header.op = RENDER_CONTEXT_OP_CREATE_RESOURCE,
       .res_id = res_id,
       .blob_id = blob_id,
       .blob_size = blob_size,
       .blob_flags = blob_flags,
+      .hostmem_offset = hostmem_offset,
    };
    if (!proxy_socket_send_request(&ctx->socket, &req, sizeof(req))) {
       proxy_log("failed to get blob %" PRIu64, blob_id);

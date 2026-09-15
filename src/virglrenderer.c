@@ -634,6 +634,18 @@ int virgl_renderer_resource_get_info_ext(int res_handle,
    return 0;
 }
 
+#if ENABLE_RENDER_SERVER
+extern _Thread_local uint64_t proxy_next_blob_hostmem_offset;
+#endif
+void virgl_renderer_set_blob_hostmem_offset(uint64_t offset)
+{
+#if ENABLE_RENDER_SERVER
+   proxy_next_blob_hostmem_offset = offset;
+#else
+   (void)offset;
+#endif
+}
+
 void virgl_renderer_get_cap_set(uint32_t cap_set, uint32_t *max_ver,
                                 uint32_t *max_size)
 {

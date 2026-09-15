@@ -333,6 +333,11 @@ VIRGL_EXPORT int virgl_renderer_transfer_write_iov(uint32_t handle,
                                                    struct iovec *iovec,
                                                    unsigned int iovec_cnt);
 
+/* egg: the next virgl_renderer_resource_create_blob() on this thread places a
+ * proxied (render server) shm blob at this byte offset of the shared hostmem
+ * window (EGG_HOSTMEM_FD) instead of a private memfd. UINT64_MAX = none. */
+VIRGL_EXPORT void virgl_renderer_set_blob_hostmem_offset(uint64_t offset);
+
 VIRGL_EXPORT void virgl_renderer_get_cap_set(uint32_t set, uint32_t *max_ver,
                                              uint32_t *max_size);
 

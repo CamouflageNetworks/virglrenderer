@@ -62,12 +62,17 @@ npt_renderer_submit_fence(uint32_t ctx_id,
                           uint64_t ring_idx,
                           uint64_t fence_id);
 
+/* egg: place (offset,size) inside the shared hostmem window; false if none. */
+bool
+npt_hostmem_place(uint64_t offset, uint64_t size, void **out_ptr, int *out_fd);
+
 bool
 npt_renderer_create_resource(uint32_t ctx_id,
                              uint32_t res_id,
                              uint64_t blob_id,
                              uint64_t blob_size,
                              uint32_t blob_flags,
+                             uint64_t hostmem_offset,
                              enum virgl_resource_fd_type *out_fd_type,
                              int *out_res_fd,
                              uint32_t *out_map_info,

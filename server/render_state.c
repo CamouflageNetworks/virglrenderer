@@ -360,6 +360,7 @@ render_state_create_resource(uint32_t ctx_id,
                              uint64_t blob_id,
                              uint64_t blob_size,
                              uint32_t blob_flags,
+                             uint64_t hostmem_offset,
                              enum virgl_resource_fd_type *out_fd_type,
                              int *out_res_fd,
                              uint32_t *out_map_info,
@@ -385,7 +386,7 @@ render_state_create_resource(uint32_t ctx_id,
 #ifdef ENABLE_NEPTUNE
    case RENDER_BACKEND_NEPTUNE:
       return npt_renderer_create_resource(ctx_id, res_id, blob_id, blob_size,
-                                          blob_flags, out_fd_type, out_res_fd,
+                                          blob_flags, hostmem_offset, out_fd_type, out_res_fd,
                                           out_map_info, out_export_format);
 #endif
    default:

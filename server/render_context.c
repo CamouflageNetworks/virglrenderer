@@ -201,7 +201,8 @@ render_context_dispatch_create_resource(struct render_context *ctx,
    };
    int res_fd;
    bool ok = render_state_create_resource(ctx->ctx_id, req->res_id, req->blob_id,
-                                          req->blob_size, req->blob_flags, &reply.fd_type,
+                                          req->blob_size, req->blob_flags,
+                                          req->hostmem_offset, &reply.fd_type,
                                           &res_fd, &reply.map_info, &reply.vulkan_info,
                                           &reply.export_format);
    if (!ok)
