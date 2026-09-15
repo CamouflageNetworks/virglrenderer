@@ -48,6 +48,8 @@ struct npt_queue_sync {
     * measures how long the guest has actually been waiting and a wedged
     * ring unwinds its whole backlog inside one budget. */
    uint64_t deadline_ns;
+   /* Diagnostics: when the sync was queued (npt_profile_now_ns). */
+   uint64_t enq_ns;
 
    struct list_head head;
 };

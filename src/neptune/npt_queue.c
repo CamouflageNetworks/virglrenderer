@@ -77,7 +77,8 @@ npt_queue_alloc_sync(uint32_t ring_idx,
    sync->check_fence = paired->check_fence;
    sync->check_value = paired->check_value;
    sync->fast_poll = false;
-   sync->deadline_ns = npt_profile_now_ns() +
+   sync->enq_ns = npt_profile_now_ns();
+   sync->deadline_ns = sync->enq_ns +
       (uint64_t)NPT_QUEUE_DEVICE_LOST_SEC * 1000000000ull;
 
    return sync;
@@ -278,6 +279,16 @@ npt_queue_thread(void *arg)
                  NPT_QUEUE_DEVICE_LOST_SEC);
       }
 retire:;
+
+      /* Always-on: a sync that sat in this queue for long is the host half
+       * of a guest present hitch (the swapchain waits up to 1 s on it). */
+      {
+         const uint64_t q_ns = npt_profile_now_ns() - sync->enq_ns;
+         if (q_ns > 100ull * 1000 * 1000)
+            npt_log("queue %u fence_id=%" PRIu64 ": SLOW enqueue->retire %" PRIu64
+                    " ms (sync_fd=%d rc=%d)", queue->ring_idx, sync->fence_id,
+                    q_ns / 1000000ull, sync->sync_fd, rc);
+      }
 
       if (trace) {
          const int64_t dt_ns =

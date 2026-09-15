@@ -4,6 +4,7 @@
  */
 
 #include "npt_event.h"
+#include "npt_profile.h"
 
 #include "npt_context.h"
 #include "npt_library.h"
@@ -332,6 +333,11 @@ npt_event_register(struct npt_context *ctx, uint64_t token)
 
 /* Caller holds event_mutex.  Unlinks the fence parked on ring_idx and
  * transfers it to the caller. */
+/* Always-on diagnostics for the guest-visible hitch class "present fence
+ * retired late": log whichever side of a fence/ARM pairing waited longer
+ * than this for the other, and how long. */
+#define NPT_EVENT_SLOW_PAIR_NS (100ull * 1000 * 1000)
+
 static struct npt_event_pending_fence *
 event_take_parked_locked(struct npt_context *ctx, uint32_t ring_idx)
 {
@@ -354,6 +360,10 @@ event_pair_parked(struct npt_context *ctx,
 {
    const uint32_t ring_idx = parked->ring_idx;
    const uint64_t fence_id = parked->fence_id;
+   const uint64_t waited = npt_profile_now_ns() - parked->parked_ns;
+   if (waited > NPT_EVENT_SLOW_PAIR_NS)
+      npt_log("event: SLOW fence (ring=%u id=%" PRIu64 ") waited %" PRIu64
+              " ms for its ARM", ring_idx, fence_id, waited / 1000000ull);
    free(parked);
 
    if (!npt_context_pair_event_fence(ctx, ring_idx, fence_id, paired))
@@ -437,6 +447,7 @@ npt_event_arm(struct npt_context *ctx, uint64_t token, uint32_t ring_idx,
       return false;
    }
    p->ring_idx = ring_idx;
+   p->armed_ns = npt_profile_now_ns();
    p->dup_fd   = dup_fd;
    p->proxy    = pr;
    p->auto_release = auto_release;
@@ -587,6 +598,10 @@ npt_event_pop_arm_or_park_fence(struct npt_context *ctx, uint32_t ring_idx,
    list_for_each_entry_safe(struct npt_event_pending_arm, p,
                             &ctx->event_pending_arms, head) {
       if (p->ring_idx == ring_idx) {
+         const uint64_t waited = npt_profile_now_ns() - p->armed_ns;
+         if (waited > NPT_EVENT_SLOW_PAIR_NS)
+            npt_log("event: SLOW ARM (ring=%u) waited %" PRIu64 " ms for fence id=%"
+                    PRIu64, ring_idx, waited / 1000000ull, fence_id);
          fd = p->dup_fd;
          out->fd = fd;
          out->check_fence = p->check_fence;
@@ -612,6 +627,7 @@ npt_event_pop_arm_or_park_fence(struct npt_context *ctx, uint32_t ring_idx,
       }
       f->ring_idx = ring_idx;
       f->fence_id = fence_id;
+      f->parked_ns = npt_profile_now_ns();
       list_addtail(&f->head, &ctx->event_pending_fences);
       static int parked_logged;
       if (parked_logged < 8) {

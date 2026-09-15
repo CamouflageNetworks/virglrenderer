@@ -42,6 +42,8 @@ struct npt_event_proxy {
 
 struct npt_event_pending_arm {
    uint32_t ring_idx;
+   /* Diagnostics: when the ARM decoded (npt_profile_now_ns). */
+   uint64_t armed_ns;
    int      dup_fd;         /* pop transfers ownership to the sync queue */
    /* Keeps a refcount on the proxy until pop transfers dup_fd. */
    struct npt_event_proxy *proxy;
@@ -77,6 +79,8 @@ struct npt_event_pending_fence {
    struct list_head head;
    uint32_t ring_idx;
    uint64_t fence_id;
+   /* Diagnostics: when the fence parked (npt_profile_now_ns). */
+   uint64_t parked_ns;
 };
 
 bool npt_event_init(struct npt_context *ctx);

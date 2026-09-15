@@ -5,6 +5,9 @@
 
 #include "render_context.h"
 
+#include <pthread.h>
+#include <time.h>
+
 #include <errno.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
@@ -76,6 +79,13 @@ render_context_fence_thread(void *arg)
    struct render_context *ctx = arg;
 
    u_thread_setname("virgl-fence");
+#if defined(__APPLE__)
+   /* On the guest's present critical path: a default-QoS thread can sit
+    * unscheduled for hundreds of ms while the ring/queue threads (already
+    * USER_INTERACTIVE) and the vCPUs spin -- seen as a 0.4-1.5 s present
+    * fence and a matching guest swapchain freeze. */
+   pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#endif
 
    for (;;) {
       struct render_context_op_submit_fence_request req;
@@ -90,11 +100,23 @@ render_context_fence_thread(void *arg)
          break;
       }
 
+      /* Always-on diagnostics: this call takes the global renderer lock,
+       * so a long dispatch on the main thread shows up here as a late
+       * fence -- the host half of a guest present hitch. */
+      struct timespec t0, t1;
+      clock_gettime(CLOCK_MONOTONIC, &t0);
       if (!render_state_submit_fence(ctx->ctx_id,
                                      VIRGL_RENDERER_FENCE_FLAG_MERGEABLE,
                                      req.ring_index, req.seqno))
          render_log("fence channel: submit_fence(ring %u) failed",
                     req.ring_index);
+      clock_gettime(CLOCK_MONOTONIC, &t1);
+      const int64_t dt_ms = (int64_t)(t1.tv_sec - t0.tv_sec) * 1000 +
+                            ((int64_t)t1.tv_nsec - (int64_t)t0.tv_nsec) / 1000000;
+      if (dt_ms > 100)
+         render_log("fence channel: SLOW submit_fence(ring %u seqno %u) took %lld ms "
+                    "(renderer lock held elsewhere?)",
+                    req.ring_index, req.seqno, (long long)dt_ms);
    }
 
    return 0;
@@ -458,6 +480,14 @@ render_context_init(struct render_context *ctx, const struct render_context_args
 bool
 render_context_main(const struct render_context_args *args)
 {
+#if defined(__APPLE__)
+   /* On the guest's present critical path: a default-QoS thread can sit
+    * unscheduled for hundreds of ms while the ring/queue threads (already
+    * USER_INTERACTIVE) and the vCPUs spin -- seen as a 0.4-1.5 s present
+    * fence and a matching guest swapchain freeze. */
+   pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#endif
+
    struct render_context ctx;
 
    assert(args->valid && args->ctx_id && args->ctx_fd >= 0);

@@ -5,6 +5,8 @@
 
 #include "proxy_context.h"
 
+#include <pthread.h>
+
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/mman.h>
@@ -187,6 +189,14 @@ proxy_context_sync_thread(void *arg)
    };
 
    assert(proxy_renderer.flags & VIRGL_RENDERER_ASYNC_FENCE_CB);
+
+#if defined(__APPLE__)
+   /* On the guest's fence-retire critical path: a default-QoS thread can sit
+    * unscheduled for hundreds of ms while the ring/queue threads (already
+    * USER_INTERACTIVE) and the vCPUs spin -- seen as a 0.4-1.5 s present
+    * fence and a matching guest swapchain freeze. */
+   pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#endif
 
    while (!ctx->sync_thread.stop) {
       const int ret = poll(poll_fds, ARRAY_SIZE(poll_fds), -1);

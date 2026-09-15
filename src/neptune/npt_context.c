@@ -1103,11 +1103,27 @@ npt_context_submit_cmd(struct npt_context *ctx, const void *buffer, size_t size)
    npt_cs_decoder_set_buffer_stream(dec, buffer, size);
 
    while (npt_cs_decoder_has_command(dec)) {
+      /* Always-on diagnostics: this runs on the server's dispatch thread
+       * under the global renderer lock, which the out-of-band fence thread
+       * also needs. A command that blocks here delays every present fence
+       * behind it -- the host half of a guest present hitch. */
+      struct npt_command_header peek = { 0 };
+      npt_cs_decoder_peek(dec, sizeof(peek), &peek, sizeof(peek));
+      const uint64_t t0 = npt_profile_now_ns();
       if (!npt_context_dispatch_one_command(ctx, &ctx->dispatch, dec,
                                             &ctx->encoder)) {
          npt_log("context %u: dispatch failed", ctx->ctx_id);
          npt_cs_decoder_reset(dec);
          return false;
+      }
+      const uint64_t dt = npt_profile_now_ns() - t0;
+      if (dt > 100ull * 1000 * 1000) {
+         const uint32_t group = (peek.cmd_type >> 24) & 0xFFu;
+         npt_log("context %u: SLOW dispatch cmd_type=0x%08x (group %u iface %u "
+                 "method %u) took %" PRIu64 " ms on the dispatch thread",
+                 ctx->ctx_id, peek.cmd_type, group,
+                 group == 255u ? (peek.cmd_type >> 8) & 0xFFFFu : peek.cmd_type & 0x00FFFFFFu,
+                 group == 255u ? peek.cmd_type & 0xFFu : 0u, dt / 1000000ull);
       }
    }
 
