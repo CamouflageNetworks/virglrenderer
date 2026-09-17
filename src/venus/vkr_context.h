@@ -32,6 +32,9 @@ struct vkr_resource {
    } u;
 
    size_t size;
+   /* egg: data lives in the VMM's shared hostmem window (see egg_hostmem.h):
+    * never munmap it, the window outlives every resource */
+   bool in_hostmem;
 };
 
 enum vkr_context_validate_level {
@@ -126,12 +129,15 @@ vkr_context_submit_fence(struct vkr_context *ctx,
 bool
 vkr_context_submit_cmd(struct vkr_context *ctx, const void *buffer, size_t size);
 
+/* hostmem_offset: byte offset inside the shared hostmem window where a shm
+ * blob (blob_id 0) must live, UINT64_MAX for a private allocation. */
 bool
 vkr_context_create_resource(struct vkr_context *ctx,
                             uint32_t res_id,
                             uint64_t blob_id,
                             uint64_t blob_size,
                             uint32_t blob_flags,
+                            uint64_t hostmem_offset,
                             struct virgl_context_blob *out_blob);
 
 bool

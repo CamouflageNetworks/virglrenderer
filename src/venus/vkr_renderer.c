@@ -4,6 +4,7 @@
  */
 
 #include "vkr_common.h"
+#include "egg_hostmem.h"
 
 #include "venus-protocol/vn_protocol_renderer_info.h"
 #include "virtgpu_drm.h"
@@ -69,6 +70,9 @@ vkr_get_capset(void *capset, uint32_t flags)
 bool
 vkr_renderer_init(uint32_t flags, const struct vkr_renderer_callbacks *cbs)
 {
+   /* egg: share the VMM's hostmem window (no-op without one) */
+   egg_hostmem_init();
+
    TRACE_INIT();
    TRACE_FUNC();
 #ifdef ENABLE_APIR
@@ -146,6 +150,10 @@ vkr_renderer_create_context(uint32_t ctx_id,
 
    if ((ctx_flags & VIRGL_RENDERER_CONTEXT_FLAG_CAPSET_ID_MASK) !=
        VIRTGPU_DRM_CAPSET_VENUS)
+      return false;
+   /* Not initialised (a server started without VIRGL_RENDERER_VENUS): the
+    * callbacks below would be NULL. Fail the context, not the process. */
+   if (!vkr_state.cbs)
       return false;
 
    /* duplicate ctx creation between server and vkr is invalid */
@@ -225,6 +233,7 @@ vkr_renderer_create_resource(uint32_t ctx_id,
                              uint64_t blob_id,
                              uint64_t blob_size,
                              uint32_t blob_flags,
+                             uint64_t hostmem_offset,
                              enum virgl_resource_fd_type *out_fd_type,
                              int *out_res_fd,
                              uint32_t *out_map_info,
@@ -247,7 +256,8 @@ vkr_renderer_create_resource(uint32_t ctx_id,
       return false;
 
    struct virgl_context_blob blob;
-   if (!vkr_context_create_resource(ctx, res_id, blob_id, blob_size, blob_flags, &blob))
+   if (!vkr_context_create_resource(ctx, res_id, blob_id, blob_size, blob_flags,
+                                    hostmem_offset, &blob))
       return false;
 
    assert(blob.type == VIRGL_RESOURCE_FD_SHM || blob.type == VIRGL_RESOURCE_FD_DMABUF ||

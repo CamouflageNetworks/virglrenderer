@@ -207,33 +207,54 @@ render_state_init(uint32_t init_flags)
    if (!state.init_count) {
       if (virgl_fence_table_init())
          return false;
+      list_inithead(&state.contexts);
+   }
+
+   /* With render-server-worker=thread every context shares this one state,
+    * and each context's init flags are scoped to ITS backend
+    * (render_client.c:init_context_args).  So the first context (Neptune, the
+    * Windows display driver) must not decide for the ones that follow: a
+    * later Venus context brings Venus up here, on an already-running server.
+    * A backend that is already up is simply reused. */
 #ifdef ENABLE_VENUS
-      if (want_venus) {
-         /* always use sync thread and async fence cb for low latency */
-         static const uint32_t vkr_flags =
-            VKR_RENDERER_THREAD_SYNC | VKR_RENDERER_ASYNC_FENCE_CB;
-         if (!vkr_renderer_init(vkr_flags, &render_state_vkr_cbs)) {
+   if (want_venus && !state.venus_inited) {
+      /* always use sync thread and async fence cb for low latency */
+      static const uint32_t vkr_flags =
+         VKR_RENDERER_THREAD_SYNC | VKR_RENDERER_ASYNC_FENCE_CB;
+      if (vkr_renderer_init(vkr_flags, &render_state_vkr_cbs)) {
+         state.venus_inited = true;
+         render_log("Venus renderer initialized");
+      } else if (!want_neptune) {
+         /* Venus is an extra on a Neptune server (Windows eggs): no Vulkan
+          * on the host must not cost the guest its D3D11. */
+         render_log("Venus init failed");
+         if (!state.init_count)
             virgl_fence_table_cleanup();
-            return false;
-         }
+         return false;
+      } else {
+         render_log("Venus init failed; continuing with Neptune only");
+         want_venus = false;
       }
+   }
 #endif
 #ifdef ENABLE_NEPTUNE
-      if (want_neptune) {
-         if (!npt_renderer_init(0, &render_state_npt_cbs)) {
+   if (want_neptune && !state.neptune_inited) {
+      if (npt_renderer_init(0, &render_state_npt_cbs)) {
+         state.neptune_inited = true;
+      } else {
+         if (!state.init_count) {
 #ifdef ENABLE_VENUS
-            if (want_venus)
+            if (state.venus_inited) {
                vkr_renderer_fini();
+               state.venus_inited = false;
+            }
 #endif
             virgl_fence_table_cleanup();
-            return false;
          }
+         return false;
       }
-#endif
-      list_inithead(&state.contexts);
-      state.venus_inited = want_venus;
-      state.neptune_inited = want_neptune;
    }
+#endif
 
    state.init_count++;
 
@@ -254,6 +275,10 @@ render_state_create_context(struct render_context *ctx,
       switch (capset_id) {
 #ifdef ENABLE_VENUS
       case VIRTGPU_DRM_CAPSET_VENUS:
+         if (!state.venus_inited) {
+            render_log("Venus context requested but Venus is not initialised in this server");
+            return false;
+         }
          ok = vkr_renderer_create_context(ctx->ctx_id, flags, name_len, name);
          if (ok)
             ctx->backend = RENDER_BACKEND_VENUS;
@@ -261,6 +286,10 @@ render_state_create_context(struct render_context *ctx,
 #endif
 #ifdef ENABLE_NEPTUNE
       case VIRTGPU_DRM_CAPSET_NEPTUNE:
+         if (!state.neptune_inited) {
+            render_log("Neptune context requested but Neptune is not initialised in this server");
+            return false;
+         }
          ok = npt_renderer_create_context(ctx->ctx_id, flags, name_len, name);
          if (ok)
             ctx->backend = RENDER_BACKEND_NEPTUNE;
@@ -375,12 +404,13 @@ render_state_create_resource(uint32_t ctx_id,
    switch (ctx->backend) {
 #ifdef ENABLE_VENUS
    case RENDER_BACKEND_VENUS: {
-      /* only meaningful for the in-process macOS path; blobs cross the
-       * server socket as fds */
+      /* map_ptr is only meaningful for the in-process macOS path; here blobs
+       * cross the server socket as fds. A shm blob with a hostmem_offset is
+       * placed inside the VMM's shared window (egg_hostmem.h). */
       uint64_t map_ptr = 0;
       return vkr_renderer_create_resource(ctx_id, res_id, blob_id, blob_size, blob_flags,
-                                          out_fd_type, out_res_fd, out_map_info, &map_ptr,
-                                          out_vulkan_info);
+                                          hostmem_offset, out_fd_type, out_res_fd,
+                                          out_map_info, &map_ptr, out_vulkan_info);
    }
 #endif
 #ifdef ENABLE_NEPTUNE

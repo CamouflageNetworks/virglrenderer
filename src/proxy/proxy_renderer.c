@@ -64,13 +64,22 @@ proxy_renderer_reset(void)
 size_t
 proxy_get_capset(uint32_t set, void *caps)
 {
+   /* Only advertise what the render server was initialised with: a guest
+    * that sees a Venus capset on a Neptune-only server creates a Venus
+    * context, which the server could not back (vkr never initialised) --
+    * seen 2026-09-17 as a SIGSEGV in vkr_renderer_create_context that took
+    * every context on the device down with it. */
    switch (set) {
 #ifdef ENABLE_VENUS
    case VIRTGPU_DRM_CAPSET_VENUS:
+      if (!(proxy_renderer.flags & VIRGL_RENDERER_VENUS))
+         return 0;
       return vkr_get_capset(caps, proxy_renderer.flags);
 #endif
 #ifdef ENABLE_NEPTUNE
    case VIRTGPU_DRM_CAPSET_NEPTUNE:
+      if (!(proxy_renderer.flags & VIRGL_RENDERER_NEPTUNE))
+         return 0;
       return npt_get_capset(caps, proxy_renderer.flags);
 #endif
    default:

@@ -4,6 +4,7 @@
  */
 
 #include "vkr_context.h"
+#include "egg_hostmem.h"
 
 #include <sys/mman.h>
 #include <sys/types.h>
@@ -189,6 +190,9 @@ vkr_context_free_resource(struct hash_entry *entry)
 {
    struct vkr_resource *res = entry->data;
    if (res->fd_type == VIRGL_RESOURCE_FD_SHM) {
+      if (res->in_hostmem) {
+         /* the shared hostmem window is the VMM's; the pages stay */
+      } else
 #ifdef __APPLE__
       /* macOS in-process: res->u.data was redirected to the SHM BAR HVA by
        * the VMM.  Don't munmap/free it — the SHM BAR is managed by the VMM. */
@@ -242,6 +246,7 @@ vkr_context_import_resource_internal(struct vkr_context *ctx,
    res->res_id = res_id;
    res->fd_type = fd_type;
    res->size = blob_size;
+   res->in_hostmem = false;
 
    /* fd and mmap_ptr cannot be valid at the same time, but allowed to be -1 and NULL */
    assert(fd < 0 || !mmap_ptr);
@@ -279,13 +284,57 @@ vkr_context_import_resource_from_shm(struct vkr_context *ctx,
    return true;
 }
 
+/* egg: a shm blob the guest already placed inside the VMM's shared hostmem
+ * window (render server on macOS, see egg_hostmem.h). The pages are the
+ * guest's own BAR pages; the fd handed back is the window's, which the proxy
+ * validates like any shm fd (size >= blob). No rounding: the guest laid the
+ * ring out from blob_size and the next blob may start right after it. */
+static bool
+vkr_context_create_resource_in_hostmem(struct vkr_context *ctx,
+                                       uint32_t res_id,
+                                       uint64_t blob_size,
+                                       uint64_t hostmem_offset,
+                                       struct virgl_context_blob *out_blob)
+{
+   void *data;
+   int hostmem_fd;
+   if (!egg_hostmem_place(hostmem_offset, blob_size, &data, &hostmem_fd))
+      return false;
+
+   int fd = dup(hostmem_fd);
+   if (fd < 0)
+      return false;
+
+   /* Venus ring init requires head/status to read 0 */
+   memset(data, 0, blob_size);
+
+   if (!vkr_context_import_resource_internal(ctx, res_id, blob_size,
+                                             VIRGL_RESOURCE_FD_SHM, -1, data)) {
+      close(fd);
+      return false;
+   }
+   vkr_context_get_resource(ctx, res_id)->in_hostmem = true;
+
+   *out_blob = (struct virgl_context_blob){
+      .type = VIRGL_RESOURCE_FD_SHM,
+      .u.fd = fd,
+      .map_info = VIRGL_RENDERER_MAP_CACHE_CACHED,
+   };
+   return true;
+}
+
 static bool
 vkr_context_create_resource_from_shm(struct vkr_context *ctx,
                                      uint32_t res_id,
                                      uint64_t blob_size,
+                                     uint64_t hostmem_offset,
                                      struct virgl_context_blob *out_blob)
 {
    assert(!vkr_context_get_resource(ctx, res_id));
+
+   if (hostmem_offset != UINT64_MAX)
+      return vkr_context_create_resource_in_hostmem(ctx, res_id, blob_size, hostmem_offset,
+                                                    out_blob);
 
    /* Round up to host page size. The VMM maps this resource with
     * MAP_FIXED which requires page-aligned sizes.
@@ -408,13 +457,15 @@ vkr_context_create_resource(struct vkr_context *ctx,
                             uint64_t blob_id,
                             uint64_t blob_size,
                             uint32_t blob_flags,
+                            uint64_t hostmem_offset,
                             struct virgl_context_blob *out_blob)
 {
    /* blob_id == 0 does not refer to an existing VkDeviceMemory, but implies a shm
     * allocation. It is logically contiguous and it can be exported.
     */
    if (!blob_id && blob_flags == VIRGL_RENDERER_BLOB_FLAG_USE_MAPPABLE)
-      return vkr_context_create_resource_from_shm(ctx, res_id, blob_size, out_blob);
+      return vkr_context_create_resource_from_shm(ctx, res_id, blob_size, hostmem_offset,
+                                                  out_blob);
 
    return vkr_context_create_resource_from_device_memory(ctx, res_id, blob_id, blob_size,
                                                          blob_flags, out_blob);

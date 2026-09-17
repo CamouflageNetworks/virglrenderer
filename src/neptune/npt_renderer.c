@@ -4,6 +4,7 @@
  */
 
 #include "npt_common.h"
+#include "egg_hostmem.h"
 
 #include <stdlib.h>
 
@@ -32,50 +33,18 @@ struct npt_renderer_state {
 
 static struct npt_renderer_state npt_state;
 
-/* egg: the VMM's hostmem BAR backing, shared with this process as a
- * file descriptor (EGG_HOSTMEM_FD/EGG_HOSTMEM_SIZE) and mapped whole once.
- * Blob creates that carry a hostmem_offset live at window+offset. */
-static struct {
-   int fd;
-   void *ptr;
-   uint64_t size;
-} npt_hostmem = { .fd = -1 };
-
+/* egg: the VMM's hostmem BAR window is shared between Neptune and Venus
+ * (egg_hostmem.h); these two keep npt's names for its callers. */
 static void
 npt_hostmem_init(void)
 {
-   const char *fd_env = getenv("EGG_HOSTMEM_FD");
-   const char *size_env = getenv("EGG_HOSTMEM_SIZE");
-   if (!fd_env || !size_env)
-      return;
-   int fd = atoi(fd_env);
-   uint64_t size = strtoull(size_env, NULL, 0);
-   if (fd < 0 || !size)
-      return;
-   void *ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-   if (ptr == MAP_FAILED) {
-      npt_log("hostmem: mmap(fd=%d, %" PRIu64 " bytes) failed: %s", fd, size, strerror(errno));
-      return;
-   }
-   npt_hostmem.fd = fd;
-   npt_hostmem.ptr = ptr;
-   npt_hostmem.size = size;
-   npt_log("hostmem: shared window fd=%d size=%" PRIu64 " MiB mapped at %p", fd, size >> 20, ptr);
+   egg_hostmem_init();
 }
 
 bool
 npt_hostmem_place(uint64_t offset, uint64_t size, void **out_ptr, int *out_fd)
 {
-   if (offset == UINT64_MAX || !npt_hostmem.ptr)
-      return false;
-   if (offset > npt_hostmem.size || size > npt_hostmem.size - offset) {
-      npt_log("hostmem: blob offset %" PRIu64 " size %" PRIu64 " outside the %" PRIu64 "-byte window",
-              offset, size, npt_hostmem.size);
-      return false;
-   }
-   *out_ptr = (uint8_t *)npt_hostmem.ptr + offset;
-   *out_fd = npt_hostmem.fd;
-   return true;
+   return egg_hostmem_place(offset, size, out_ptr, out_fd);
 }
 
 /* Whether the D3D12 backend library exists and exports D3D12CreateDevice.

@@ -950,7 +950,7 @@ static int vkr_virgl_get_blob(struct virgl_context *base,
 {
    struct vkr_virgl_context *ctx = (struct vkr_virgl_context *)base;
    if (vkr_context_create_resource(ctx->vkr_ctx, res_id, blob_id,
-                                    blob_size, blob_flags, blob))
+                                    blob_size, blob_flags, UINT64_MAX, blob))
       return 0;
    return -EINVAL;
 }
