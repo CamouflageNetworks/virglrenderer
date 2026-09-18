@@ -26,6 +26,7 @@ subdir('gallium')
 
 virgl_sources = [
    'egg_hostmem.c',
+   'egg_blob_sync.c',
    'virgl_context.c',
    'virgl_fence.c',
    'virgl_resource.c',

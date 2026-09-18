@@ -5,6 +5,7 @@
 
 #include "vkr_context.h"
 #include "egg_hostmem.h"
+#include "egg_blob_sync.h"
 
 #include <sys/mman.h>
 #include <sys/types.h>
@@ -220,6 +221,9 @@ vkr_context_add_resource(struct vkr_context *ctx, struct vkr_resource *res)
 static inline void
 vkr_context_remove_resource(struct vkr_context *ctx, uint32_t res_id)
 {
+   /* egg: stop copying before the backing can go away. */
+   egg_blob_sync_untrack(res_id);
+
    mtx_lock(&ctx->resource_mutex);
    struct hash_entry *entry = _mesa_hash_table_search(ctx->resource_table, &res_id);
    if (likely(entry)) {
@@ -407,6 +411,69 @@ vkr_context_create_resource_from_shm(struct vkr_context *ctx,
    return true;
 }
 
+/* egg: a device-memory blob the guest placed inside the shared hostmem window.
+ *
+ * The memory itself cannot move — the VkDeviceMemory and the MTLBuffer behind
+ * it were allocated before the guest chose an offset — and its Metal pages
+ * cannot be handed to the guest directly.  So the renderer's resource is
+ * pointed at the guest's pages, and the two are kept in step by copying, which
+ * is exactly what the in-process path does on Linux (egg_virgl_track_blob_sync).
+ * Unlike mapping the Metal pages into the guest, this needs no particular
+ * stage-2 granule, so it works on the 16 KiB default.
+ */
+static bool
+vkr_context_create_device_memory_in_hostmem(struct vkr_context *ctx,
+                                            uint32_t res_id,
+                                            uint64_t blob_id,
+                                            uint64_t blob_size,
+                                            uint64_t hostmem_offset,
+                                            struct virgl_context_blob *out_blob)
+{
+   struct vkr_device_memory *mem = vkr_context_get_object(ctx, blob_id);
+   if (!mem || mem->base.type != VK_OBJECT_TYPE_DEVICE_MEMORY)
+      return false;
+
+   void *gpu_ptr = vkr_device_memory_host_ptr(mem);
+   if (!gpu_ptr) {
+      vkr_log("device memory blob %" PRIu64 " has no host mapping to share",
+              blob_id);
+      return false;
+   }
+
+   void *guest_ptr;
+   int hostmem_fd;
+   if (!egg_hostmem_place(hostmem_offset, blob_size, &guest_ptr, &hostmem_fd))
+      return false;
+
+   int fd = dup(hostmem_fd);
+   if (fd < 0)
+      return false;
+
+   /* Seed the guest's view with what the memory holds now, so a blob the
+    * driver has already written to does not read as zeroes until the first
+    * copy. */
+   memcpy(guest_ptr, gpu_ptr, blob_size);
+
+   if (!vkr_context_import_resource_internal(ctx, res_id, blob_size,
+                                             VIRGL_RESOURCE_FD_SHM, -1, guest_ptr)) {
+      close(fd);
+      return false;
+   }
+   vkr_context_get_resource(ctx, res_id)->in_hostmem = true;
+
+   vkr_log("device memory blob res %u (blob_id %" PRIu64 ") shared through the "
+           "hostmem window at +%" PRIu64 ", %" PRIu64 " bytes",
+           res_id, blob_id, hostmem_offset, blob_size);
+   egg_blob_sync_track(res_id, blob_id, gpu_ptr, guest_ptr, blob_size);
+
+   *out_blob = (struct virgl_context_blob){
+      .type = VIRGL_RESOURCE_FD_SHM,
+      .u.fd = fd,
+      .map_info = VIRGL_RENDERER_MAP_CACHE_CACHED,
+   };
+   return true;
+}
+
 static bool
 vkr_context_create_resource_from_device_memory(struct vkr_context *ctx,
                                                uint32_t res_id,
@@ -466,6 +533,15 @@ vkr_context_create_resource(struct vkr_context *ctx,
    if (!blob_id && blob_flags == VIRGL_RENDERER_BLOB_FLAG_USE_MAPPABLE)
       return vkr_context_create_resource_from_shm(ctx, res_id, blob_size, hostmem_offset,
                                                   out_blob);
+
+   /* egg: a mappable device-memory blob whose guest offset we know shares its
+    * bytes through the hostmem window instead of an fd the VMM has to map. */
+   if (hostmem_offset != UINT64_MAX &&
+       (blob_flags & VIRGL_RENDERER_BLOB_FLAG_USE_MAPPABLE)) {
+      return vkr_context_create_device_memory_in_hostmem(ctx, res_id, blob_id,
+                                                         blob_size, hostmem_offset,
+                                                         out_blob);
+   }
 
    return vkr_context_create_resource_from_device_memory(ctx, res_id, blob_id, blob_size,
                                                          blob_flags, out_blob);

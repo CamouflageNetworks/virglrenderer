@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include "egg_blob_sync.h"
+
 #include "vkr_queue.h"
 
 #include "venus-protocol/vn_protocol_renderer_queue.h"
@@ -205,6 +207,10 @@ vkr_queue_thread(void *arg)
       void (*small_cb)(void) = atomic_load(&vkr_blob_sync_small_cb);
       if (small_cb)
          small_cb();
+      /* egg: in the render server nothing installs that callback — the VMM is
+       * another process — so run the server's own blob sync here.  Without it
+       * fence feedback waits for the timer, and every fence costs a tick. */
+      egg_blob_sync_run(true);
 
       vkr_queue_sync_retire(queue, sync);
    }

@@ -51,6 +51,13 @@ vkr_context_init_device_memory_dispatch(struct vkr_context *ctx);
 void
 vkr_device_memory_release(struct vkr_device_memory *mem);
 
+/* egg: the CPU mapping of this memory — the bytes the GPU reads and writes.
+ * NULL when the memory has none (device-local, or an import path that never
+ * mapped it).  Used to share a device-memory blob with the guest by copy;
+ * see egg_blob_sync.h. */
+void *
+vkr_device_memory_host_ptr(const struct vkr_device_memory *mem);
+
 bool
 vkr_device_memory_export_blob(struct vkr_device_memory *mem,
                               uint64_t blob_size,

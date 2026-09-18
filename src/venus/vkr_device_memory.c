@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include "egg_blob_sync.h"
+
 #include "vkr_device_memory.h"
 
 #include <math.h>
@@ -565,11 +567,17 @@ vkr_context_init_device_memory_dispatch(struct vkr_context *ctx)
 void
 vkr_device_memory_release(struct vkr_device_memory *mem)
 {
+   /* egg: stop the blob sync BEFORE the mapping it copies from is freed.
+    * untrack blocks until any in-flight copy of this entry has finished, so
+    * after it returns the pages can go. */
+   egg_blob_sync_untrack_by_gpu_ptr(vkr_device_memory_host_ptr(mem));
+
    vkr_mtl_shm_free(mem->mtl_shm);
 #ifdef __APPLE__
    if (mem->direct_map_ptr) {
       extern void egg_virgl_untrack_blob_sync_by_ptr(void *old_data);
       egg_virgl_untrack_blob_sync_by_ptr(mem->direct_map_ptr);
+      egg_blob_sync_untrack_by_gpu_ptr(mem->direct_map_ptr);
       if (mem->device) {
          struct vn_device_proc_table *vk = &mem->device->proc_table;
          vk->UnmapMemory(mem->device->base.handle.device,
@@ -582,6 +590,20 @@ vkr_device_memory_release(struct vkr_device_memory *mem)
       vkr_gbm_bo_destroy(mem->gbm_bo);
    if (mem->udmabuf_fd >= 0)
       close(mem->udmabuf_fd);
+}
+
+void *
+vkr_device_memory_host_ptr(const struct vkr_device_memory *mem)
+{
+   if (!mem)
+      return NULL;
+   if (mem->mtl_shm && mem->mtl_shm->shm_ptr)
+      return mem->mtl_shm->shm_ptr;
+#ifdef __APPLE__
+   if (mem->direct_map_ptr)
+      return mem->direct_map_ptr;
+#endif
+   return NULL;
 }
 
 bool
