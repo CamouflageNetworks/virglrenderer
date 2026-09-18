@@ -43,4 +43,11 @@ egg_blob_sync_untrack_by_gpu_ptr(void *gpu_ptr);
 void
 egg_blob_sync_run(bool small_only);
 
+/* Push the guest's writes to the GPU's copy.  Call it immediately before
+ * handing work to the GPU: a periodic pass cannot stand in for this, because a
+ * guest that writes a buffer and submits in the next instruction always wins
+ * the race against it.  See the definition. */
+void
+egg_blob_sync_push_before_gpu(void);
+
 #endif /* EGG_BLOB_SYNC_H */

@@ -41,6 +41,10 @@ struct vkr_device_memory {
     * FD export/import and map the device memory directly. */
    void *direct_map_ptr;
    uint64_t direct_map_size;
+
+   /* Set when the hostmem-window path vkMapMemory()d this allocation and is
+    * holding the mapping open for the lifetime of the memory. */
+   bool window_mapped;
 #endif
 };
 VKR_DEFINE_OBJECT_CAST(device_memory, VK_OBJECT_TYPE_DEVICE_MEMORY, VkDeviceMemory)

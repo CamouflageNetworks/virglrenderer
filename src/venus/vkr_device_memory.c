@@ -572,6 +572,13 @@ vkr_device_memory_release(struct vkr_device_memory *mem)
     * after it returns the pages can go. */
    egg_blob_sync_untrack_by_gpu_ptr(vkr_device_memory_host_ptr(mem));
 
+   if (mem->window_mapped && mem->device) {
+      struct vn_device_proc_table *vk = &mem->device->proc_table;
+      vk->UnmapMemory(mem->device->base.handle.device,
+                      mem->base.handle.device_memory);
+      mem->window_mapped = false;
+   }
+
    vkr_mtl_shm_free(mem->mtl_shm);
 #ifdef __APPLE__
    if (mem->direct_map_ptr) {

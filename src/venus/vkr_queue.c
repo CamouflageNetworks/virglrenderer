@@ -399,6 +399,8 @@ vkr_dispatch_vkQueueSubmit(UNUSED struct vn_dispatch_context *dispatch,
 
    vn_replace_vkQueueSubmit_args_handle(args);
 
+   egg_blob_sync_push_before_gpu();
+
    mtx_lock(&queue->vk_mutex);
    args->ret =
       vk->QueueSubmit(args->queue, args->submitCount, args->pSubmits, args->fence);
@@ -414,6 +416,8 @@ vkr_dispatch_vkQueueBindSparse(UNUSED struct vn_dispatch_context *dispatch,
    struct vn_device_proc_table *vk = &queue->device->proc_table;
 
    vn_replace_vkQueueBindSparse_args_handle(args);
+
+   egg_blob_sync_push_before_gpu();
 
    mtx_lock(&queue->vk_mutex);
    args->ret =
@@ -439,6 +443,8 @@ vkr_dispatch_vkQueueSubmit2(UNUSED struct vn_dispatch_context *dispatch,
    struct vn_device_proc_table *vk = &queue->device->proc_table;
 
    vn_replace_vkQueueSubmit2_args_handle(args);
+
+   egg_blob_sync_push_before_gpu();
 
    mtx_lock(&queue->vk_mutex);
    args->ret =

@@ -421,6 +421,36 @@ vkr_context_create_resource_from_shm(struct vkr_context *ctx,
  * Unlike mapping the Metal pages into the guest, this needs no particular
  * stage-2 granule, so it works on the 16 KiB default.
  */
+/* EGG_VENUS_WINDOW_MAP and EGG_VENUS_WINDOW_EXPORT, both described where they
+ * are used below.  Read once per process; "0" turns one off and anything else,
+ * including leaving it unset, keeps the shipping default. */
+static bool
+egg_window_blob_knob(const char *name, bool dflt)
+{
+   const char *v = getenv(name);
+   if (!v || !v[0])
+      return dflt;
+   return v[0] != '0';
+}
+
+static bool
+egg_window_blob_map(void)
+{
+   static int cached = -1;
+   if (cached < 0)
+      cached = egg_window_blob_knob("EGG_VENUS_WINDOW_MAP", false) ? 1 : 0;
+   return cached == 1;
+}
+
+static bool
+egg_window_blob_export(void)
+{
+   static int cached = -1;
+   if (cached < 0)
+      cached = egg_window_blob_knob("EGG_VENUS_WINDOW_EXPORT", false) ? 1 : 0;
+   return cached == 1;
+}
+
 static bool
 vkr_context_create_device_memory_in_hostmem(struct vkr_context *ctx,
                                             uint32_t res_id,
@@ -444,6 +474,55 @@ vkr_context_create_device_memory_in_hostmem(struct vkr_context *ctx,
    int hostmem_fd;
    if (!egg_hostmem_place(hostmem_offset, blob_size, &guest_ptr, &hostmem_fd))
       return false;
+
+   /* Two things the mapped path does to a VkDeviceMemory that this one did
+    * not.  They are kept separable because only measurement can say which of
+    * them matters:
+    *
+    *  - vkMapMemory.  The bytes are already ours — the allocation was imported
+    *    from an MTLBuffer we wrapped around this very shm — so mapping hands
+    *    back the address we already have, and it turned out to fix nothing:
+    *    the fence problem was a race on the guest's own writes, fixed by
+    *    pushing at the submit (see egg_blob_sync_push_before_gpu).  DEFAULT
+    *    OFF, and not just because it is useless: holding the mapping open and
+    *    releasing it in vkr_device_memory_release segfaults MoltenVK inside
+    *    vkUnmapMemory during context teardown (EXC_BAD_ACCESS under
+    *    MVKBaseObject::reportMessage, from vkr_device_destroy), which kills
+    *    the render server — and with it the desktop, because Neptune draws
+    *    through the same process.  Kept only so the experiment is repeatable.
+    *  - vkr_device_memory_export_blob.  For shm-backed memory that only dups
+    *    the fd and marks the allocation exported; we share the bytes through
+    *    the window instead, so the fd is closed again straight away.
+    *
+    * Each defaults to the way the measurement came out, and each can be
+    * overridden from the environment so the experiment can be repeated
+    * against a shipping build without rebuilding it. */
+   if (egg_window_blob_map()) {
+      struct vn_device_proc_table *vk = &mem->device->proc_table;
+      void *mapped = NULL;
+      VkResult mr = vk->MapMemory(mem->device->base.handle.device,
+                                  mem->base.handle.device_memory, 0,
+                                  mem->allocation_size, 0, &mapped);
+      if (mr == VK_SUCCESS && mapped) {
+         mem->window_mapped = true;
+         if (mapped != gpu_ptr) {
+            vkr_log("device memory blob %" PRIu64 ": host map %p is not the shm %p, "
+                    "syncing the mapped pointer", blob_id, mapped, gpu_ptr);
+            gpu_ptr = mapped;
+         }
+      } else {
+         vkr_log("device memory blob %" PRIu64 ": vkMapMemory failed (%d)", blob_id, mr);
+      }
+   }
+
+   if (egg_window_blob_export()) {
+      struct virgl_context_blob exported;
+      if (vkr_device_memory_export_blob(mem, blob_size,
+                                        VIRGL_RENDERER_BLOB_FLAG_USE_MAPPABLE, &exported)) {
+         if (exported.type != VIRGL_RESOURCE_FD_INVALID && exported.u.fd >= 0)
+            close(exported.u.fd);
+      }
+   }
 
    int fd = dup(hostmem_fd);
    if (fd < 0)
@@ -527,6 +606,11 @@ vkr_context_create_resource(struct vkr_context *ctx,
                             uint64_t hostmem_offset,
                             struct virgl_context_blob *out_blob)
 {
+   vkr_log("blob request res %u blob_id %" PRIu64 " size %" PRIu64 " flags 0x%x "
+           "hostmem_offset %s%" PRIu64,
+           res_id, blob_id, blob_size, blob_flags,
+           hostmem_offset == UINT64_MAX ? "none " : "+", hostmem_offset);
+
    /* blob_id == 0 does not refer to an existing VkDeviceMemory, but implies a shm
     * allocation. It is logically contiguous and it can be exported.
     */

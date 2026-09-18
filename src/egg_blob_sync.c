@@ -48,6 +48,8 @@ struct egg_blob_sync_entry {
       EGG_BLOB_DIR_UNKNOWN = 0,
       EGG_BLOB_DIR_GPU_WRITES, /* proven: pull gpu -> guest, for good */
    } dir;
+   uint32_t last_gpu0;
+   uint32_t last_guest0;
    uint64_t size;
    bool active;
 };
@@ -128,6 +130,71 @@ egg_blob_sync_ptr_valid(void *ptr, uint64_t size)
    return mincore((void *)page, EGG_BLOB_SYNC_PAGE, &vec) == 0;
 }
 
+/* Log the first word that differs from the shadow, with its offset, so a write
+ * at a slot offset is as visible as one at the start of the page. */
+static void
+egg_blob_sync_trace_side(const struct egg_blob_sync_entry *e,
+                         const char *side,
+                         const void *now,
+                         const void *shadow)
+{
+   if (!shadow)
+      return;
+   const uint32_t *a = now, *b = shadow;
+   for (uint64_t i = 0; i < e->size / sizeof(*a); i++) {
+      if (a[i] == b[i])
+         continue;
+      fprintf(stderr, "egg blob sync: res %u %s[%llu] %08x->%08x\n", e->res_id, side,
+              (unsigned long long)(i * sizeof(*a)), b[i], a[i]);
+      return;
+   }
+}
+
+/* Push the guest's writes into the GPU's copy of every blob it still owns.
+ *
+ * The periodic thread cannot do this on its own.  A guest that writes a
+ * staging buffer and submits in the next instruction beats a 5 ms poll every
+ * time, and the GPU then reads whatever was there before — zeroes, usually.
+ * The same race is what silently breaks fences: Venus's feedback pool holds
+ * the value the GPU is told to copy into the fence's slot, the guest writes it
+ * once at pool setup, and if the push has not happened by the first submit the
+ * GPU copies a zero into the slot.  Nothing on the GPU side ever changes after
+ * that, so there is no write to detect and no fence to report — the fence just
+ * never signals, and whether it signals at all comes down to whether the poll
+ * happened to fall between the write and the submit.
+ *
+ * Vulkan's own ordering rule says what to do: host writes to mapped memory are
+ * visible to a submission if they happen before it.  So push at the submit,
+ * not on a timer. */
+void
+egg_blob_sync_push_before_gpu(void)
+{
+   pthread_mutex_lock(&egg_blob_sync_mutex);
+   for (int i = 0; i < egg_blob_sync_count; i++) {
+      struct egg_blob_sync_entry *e = &egg_blob_syncs[i];
+      if (!e->active || e->dir == EGG_BLOB_DIR_GPU_WRITES || egg_blob_sync_no_push)
+         continue;
+      if (!egg_blob_sync_ptr_valid(e->gpu_ptr, e->size) ||
+          !egg_blob_sync_ptr_valid(e->guest_ptr, e->size)) {
+         e->active = false;
+         continue;
+      }
+      if (!egg_blob_sync_changed(e->guest_ptr, e->guest_shadow, e->size))
+         continue;
+
+      memcpy(e->gpu_ptr, e->guest_ptr, e->size);
+      if (egg_blob_sync_trace)
+         fprintf(stderr, "egg blob sync: res %u pushed at submit\n", e->res_id);
+      /* Both shadows, so the periodic pass does not read our own push back as
+       * a write from the GPU and latch the blob the wrong way round. */
+      if (e->guest_shadow)
+         memcpy(e->guest_shadow, e->guest_ptr, e->size);
+      if (e->gpu_shadow)
+         memcpy(e->gpu_shadow, e->gpu_ptr, e->size);
+   }
+   pthread_mutex_unlock(&egg_blob_sync_mutex);
+}
+
 void
 egg_blob_sync_run(bool small_only)
 {
@@ -145,6 +212,15 @@ egg_blob_sync_run(bool small_only)
          e->active = false;
          continue;
       }
+      if (egg_blob_sync_trace) {
+         /* Report movement anywhere in the blob, not just at offset 0: a
+          * feedback pool hands out slots at an offset the guest picks, so
+          * watching the first word alone reports "nothing happened" for the
+          * one blob whose behaviour is in question. */
+         egg_blob_sync_trace_side(e, "gpu", e->gpu_ptr, e->gpu_shadow);
+         egg_blob_sync_trace_side(e, "guest", e->guest_ptr, e->guest_shadow);
+      }
+
       if (e->dir == EGG_BLOB_DIR_UNKNOWN) {
          /* No shadow means too large to watch: that is a swapchain image. */
          if (!e->gpu_shadow ||
