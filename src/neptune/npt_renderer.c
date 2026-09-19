@@ -102,14 +102,36 @@ npt_capset_backend_caps(void)
    if (backend && !strcmp(backend, "dxmt")) {
       /* Not EXTENDED_RESOURCE_SHARING: DXMT reports the cap but fails
        * every SHARED_NTHANDLE texture create, so advertising it would
-       * only move an app's failure from the cap check to create time. */
+       * only move an app's failure from the cap check to create time.
+       *
+       * CAP_DXIL: DXMT now consumes DXIL containers (its DXIL front end;
+       * the app-local D3D12 path already runs SM 6.x DXIL), and Triton
+       * forwards the container to the host verbatim through pfnCreateShader
+       * (tritonPipeline12.c t12CreateShaderCommon), so the WDDM/system path
+       * is a DXIL consumer too, not just the app-local pair.  The bit is
+       * what makes the D3D12 runtime hand this driver SM 6.x DXIL and makes
+       * Triton advertise SM 6.x + pipeline level 12_1 instead of the
+       * DXBC-only SM 5.1 / FL 11_1 floor (tritonDDI12.c GetCaps: the
+       * SHADER_MODELS and 3DPIPELINESUPPORT1 cases gate on this bit).
+       * Setting it also makes Triton report the FL 12_0/12_1 label caps
+       * TiledResourcesTier>=2 and ConservativeRasterizationTier>=1
+       * (tritonDDI12.c:382-394) which DXMT does not actually back -- but
+       * DXMT fails those cleanly (CreateReservedResource* -> E_NOTIMPL,
+       * UpdateTileMappings/CopyTileMappings no-op, a conservative-raster
+       * PSO fails at create), never a crash.
+       *
+       * Kill switch if DXIL regresses: boot the host with
+       * NPT_CAPSET_CAPS=0x37 -- this table's value WITHOUT the DXIL bit
+       * (npt_capset_caps_override replaces the whole derived word, the
+       * D3D12 bit included), which reverts to DXBC-only SM 5.1 / FL 11_1. */
       return VIRGL_RENDERER_CAPSET_NEPTUNE_CAP_TBDR |
              VIRGL_RENDERER_CAPSET_NEPTUNE_CAP_MSAA_RTV_FORCED_SC1 |
              VIRGL_RENDERER_CAPSET_NEPTUNE_CAP_MAP_DEFAULT_BUFFERS |
-             VIRGL_RENDERER_CAPSET_NEPTUNE_CAP_SHADER_CACHE;
+             VIRGL_RENDERER_CAPSET_NEPTUNE_CAP_SHADER_CACHE |
+             VIRGL_RENDERER_CAPSET_NEPTUNE_CAP_DXIL;
    }
    /* D3DMetal has none of the DXMT bits, but its shader front end
-    * (Metal Shader Converter) takes DXIL natively; DXMT parses DXBC only. */
+    * (Metal Shader Converter) also takes DXIL natively. */
    return VIRGL_RENDERER_CAPSET_NEPTUNE_CAP_DXIL;
 }
 
