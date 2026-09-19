@@ -1263,6 +1263,10 @@ npt_context_create_resource(struct npt_context *ctx,
       res->size = blob_size;
       res->u.data = data;
       res->in_hostmem = in_hostmem;
+      /* A private memfd starts the data at offset 0; a hostmem blob lives
+       * at hostmem_offset within the shared-window fd. A heap import mmaps
+       * u.fd, so it needs this offset. */
+      res->fd_offset = in_hostmem ? hostmem_offset : 0;
 
 #ifdef __linux__
       /* Seal against shrink so the memfd can back a udmabuf for a D3D12

@@ -62,6 +62,14 @@ struct npt_resource {
       uint8_t *data;   /* shm mapping */
    } u;
 
+   /* Byte offset of this resource's data within u.fd.  0 for a private
+    * memfd (offset 0 is the data), but nonzero for a blob placed in the
+    * shared hostmem window (u.fd is the whole-window fd, dup'd, so the
+    * blob starts at its window offset).  A heap import must mmap u.fd at
+    * fd_offset + the guest's window offset, not at 0.  Host-assigned, so
+    * trusted; the guest never supplies it. */
+   uint64_t fd_offset;
+
    size_t size;
 
    /* Live ID3D12Heap imports aliasing u.data, plus any import in

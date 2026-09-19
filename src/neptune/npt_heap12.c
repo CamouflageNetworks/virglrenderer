@@ -81,7 +81,7 @@ npt_heap12_unpin(struct npt_context *ctx, struct npt_resource *res)
  * or -1. */
 static int
 npt_heap12_wrap_udmabuf(const struct npt_resource *res,
-                        uint32_t offset, uint64_t size)
+                        uint64_t offset, uint64_t size)
 {
    struct udmabuf_create uc;
    int dev_fd, buf_fd;
@@ -128,7 +128,7 @@ npt_heap12_import(const struct npt_d3d_library *lib, void *device,
                   void **out_heap)
 {
    const int dmabuf_fd =
-      npt_heap12_wrap_udmabuf(res, cmd->shmem_offset, cmd->size);
+      npt_heap12_wrap_udmabuf(res, res->fd_offset + cmd->shmem_offset, cmd->size);
    if (dmabuf_fd < 0)
       return NPT_E_FAIL;
 
@@ -144,8 +144,11 @@ npt_heap12_import_available(const struct npt_d3d_library *lib)
    return lib && lib->pfn_darwin_open_existing_heap_from_fd;
 }
 
-/* No udmabuf to carve the window with, so the whole blob's fd travels
- * with an explicit offset. */
+/* No udmabuf to carve the window with, so the whole fd travels with an
+ * explicit offset.  That offset is the blob's own location within u.fd
+ * (res->fd_offset, host-assigned) PLUS the guest's window offset within the
+ * blob (cmd->shmem_offset, validated): u.fd is the shared-window fd, so the
+ * blob does not start at fd offset 0. */
 static HRESULT
 npt_heap12_import(const struct npt_d3d_library *lib, void *device,
                   const struct npt_resource *res,
@@ -153,7 +156,7 @@ npt_heap12_import(const struct npt_d3d_library *lib, void *device,
                   void **out_heap)
 {
    return lib->pfn_darwin_open_existing_heap_from_fd(
-      device, res->u.fd, cmd->shmem_offset, cmd->size,
+      device, res->u.fd, res->fd_offset + cmd->shmem_offset, cmd->size,
       cmd->heap_type, cmd->heap_flags, &NPT_IID_ID3D12Heap, out_heap);
 }
 #else
@@ -232,12 +235,17 @@ npt_heap12_create_from_shmem(struct npt_context *ctx,
 
    HRESULT hr;
 
+   /* mmap/udmabuf needs a page-aligned start; the effective fd offset is the
+    * blob's own offset within u.fd plus the guest's window offset, so validate
+    * the sum (both must be aligned), not just the guest part. */
+   const uint64_t fd_off = res->fd_offset + cmd->shmem_offset;
    const long page_size = sysconf(_SC_PAGESIZE);
    if (page_size > 0 &&
-       ((cmd->shmem_offset & ((uint64_t)page_size - 1)) ||
+       ((fd_off & ((uint64_t)page_size - 1)) ||
         (cmd->size & ((uint64_t)page_size - 1)))) {
-      npt_log("create_heap_from_shmem: window (off %u, size %" PRIu64
-              ") not page-aligned", cmd->shmem_offset, cmd->size);
+      npt_log("create_heap_from_shmem: fd window (off %" PRIu64 " = base %"
+              PRIu64 " + %u, size %" PRIu64 ") not page-aligned",
+              fd_off, res->fd_offset, cmd->shmem_offset, cmd->size);
       hr = NPT_E_INVALIDARG;
       goto err_unpin;
    }
