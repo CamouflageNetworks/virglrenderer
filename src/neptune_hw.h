@@ -14,7 +14,13 @@ struct virgl_renderer_capset_neptune {
     * field ignore it; hosts predating it zero the whole struct, so a
     * clear bit always means "not supported". */
    uint32_t caps_flags;
-   uint32_t pad[13]; /* reserved for future use */
+   /* Host mmap page size (bytes) the render server aligns SHM-heap imports
+    * to (getpagesize(); 16384 on Apple Silicon).  The guest over-allocates
+    * a CREATE_HEAP_FROM_SHMEM blob by (host_map_page_size - guest_page) so
+    * the host can carve a host-page-aligned sub-window for zero-copy import.
+    * 0 = host predating the field: guest keeps the sync-map path. */
+   uint32_t host_map_page_size;
+   uint32_t pad[12]; /* reserved for future use */
 };
 
 /* The host has a D3D12 backend, so D3D12CreateDevice can succeed.  A

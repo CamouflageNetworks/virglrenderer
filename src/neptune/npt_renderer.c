@@ -132,8 +132,14 @@ npt_get_capset(void *capset, UNUSED uint32_t flags)
       const long override = npt_capset_caps_override();
       if (override >= 0)
          c->caps_flags = (uint32_t)override;
-      npt_log("capset: wire=%u caps=0x%08x", c->wire_format_version,
-              c->caps_flags);
+
+      /* Advertise the mmap alignment the SHM-heap importer requires so the
+       * guest can size its blobs to carve a host-page-aligned sub-window. */
+      const long page = sysconf(_SC_PAGESIZE);
+      c->host_map_page_size = page > 0 ? (uint32_t)page : 0;
+
+      npt_log("capset: wire=%u caps=0x%08x host_map_page=%u",
+              c->wire_format_version, c->caps_flags, c->host_map_page_size);
    }
 
    return sizeof(struct virgl_renderer_capset_neptune);

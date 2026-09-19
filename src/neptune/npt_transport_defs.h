@@ -364,6 +364,14 @@ struct npt_cmd_create_heap_from_shmem {
 
 struct npt_cmd_create_heap_from_shmem_reply {
    struct npt_reply_header header; /* header.cmd_return = HRESULT */
+   /* Guest-relative byte offset within the blob where the host actually
+    * imported the heap.  The guest sends shmem_offset=0 ("auto-align");
+    * the host rounds the blob's window up to the next host page and
+    * reports the applied offset here.  The guest shifts its own Map base
+    * by this delta so the CPU pointer and the GPU heap alias the same
+    * bytes.  Meaningful only when header.cmd_return == S_OK. */
+   uint32_t aligned_shmem_offset;
+   uint32_t pad;
 };
 
 /* ====================================================================== */

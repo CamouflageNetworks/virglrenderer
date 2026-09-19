@@ -15,6 +15,7 @@
 #include "npt_heap12.h"
 
 #include <fcntl.h>
+#include <stdint.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
 
@@ -211,9 +212,13 @@ npt_heap12_open_host_heap(void *device, struct npt_resource *res,
 static HRESULT
 npt_heap12_create_from_shmem(struct npt_context *ctx,
                              struct npt_cs_decoder *dec,
-                             const struct npt_cmd_create_heap_from_shmem *cmd)
+                             const struct npt_cmd_create_heap_from_shmem *cmd,
+                             uint32_t *out_aligned_shmem_offset)
 {
    const uint64_t device_id = cmd->header.object_id;
+
+   if (out_aligned_shmem_offset)
+      *out_aligned_shmem_offset = 0;
 
    if (!cmd->mint_heap_id || !cmd->size) {
       npt_log("create_heap_from_shmem: invalid args (mint_heap_id=0x%016"
@@ -235,25 +240,46 @@ npt_heap12_create_from_shmem(struct npt_context *ctx,
 
    HRESULT hr;
 
-   /* mmap/udmabuf needs a page-aligned start; the effective fd offset is the
-    * blob's own offset within u.fd plus the guest's window offset, so validate
-    * the sum (both must be aligned), not just the guest part. */
-   const uint64_t fd_off = res->fd_offset + cmd->shmem_offset;
-   const long page_size = sysconf(_SC_PAGESIZE);
-   if (page_size > 0 &&
-       ((fd_off & ((uint64_t)page_size - 1)) ||
-        (cmd->size & ((uint64_t)page_size - 1)))) {
-      npt_log("create_heap_from_shmem: fd window (off %" PRIu64 " = base %"
-              PRIu64 " + %u, size %" PRIu64 ") not page-aligned",
-              fd_off, res->fd_offset, cmd->shmem_offset, cmd->size);
+   const long page_size_l = sysconf(_SC_PAGESIZE);
+   const uint64_t page_size = page_size_l > 0 ? (uint64_t)page_size_l : 4096;
+
+   /* mmap wraps the window as a whole-heap buffer, so the size must be a
+    * whole number of host pages.  The guest 64 KiB-aligns heaps, so this
+    * holds -- but the value is untrusted, so validate it. */
+   if (cmd->size & (page_size - 1)) {
+      npt_log("create_heap_from_shmem: size %" PRIu64 " not a multiple of "
+              "host page %" PRIu64, cmd->size, page_size);
       hr = NPT_E_INVALIDARG;
       goto err_unpin;
    }
 
-   if ((uint64_t)cmd->shmem_offset + cmd->size > (uint64_t)res->size) {
-      npt_log("create_heap_from_shmem: window [%u, +%" PRIu64
-              ") exceeds res %u size %zu",
-              cmd->shmem_offset, cmd->size, cmd->shmem_res_id, res->size);
+   /* The KMD places the blob at 4 KiB granularity inside the shared window,
+    * but mmap needs a host-page-aligned start (16 KiB on Apple Silicon).
+    * The guest cannot know the blob's absolute window offset, so it sends
+    * shmem_offset=0 ("auto-align") and over-allocates the blob by
+    * (host_page - guest_page).  Round the requested window up to the next
+    * host page here; the guest learns the applied offset from the reply and
+    * shifts its own Map base by the same delta, so the CPU pointer and the
+    * GPU heap alias the same bytes.  The delta is a host-chosen offset the
+    * guest applies only to its own mapping; every bound below is still
+    * validated against the untrusted blob. */
+   const uint64_t req_off = res->fd_offset + cmd->shmem_offset;
+   const uint64_t misalign = req_off & (page_size - 1);
+   const uint64_t delta = misalign ? (page_size - misalign) : 0;
+   const uint64_t aligned_shmem_offset = (uint64_t)cmd->shmem_offset + delta;
+
+   /* The aligned window must lie wholly inside res, with no overflow.  If
+    * the guest under-allocated the blob the window would spill past it, so
+    * reject and let the guest degrade to sync map. */
+   if (aligned_shmem_offset < (uint64_t)cmd->shmem_offset ||   /* wrap */
+       aligned_shmem_offset > (uint64_t)UINT32_MAX ||
+       aligned_shmem_offset + cmd->size > (uint64_t)res->size) {
+      npt_log("create_heap_from_shmem: aligned window [%" PRIu64 ", +%" PRIu64
+              ") (blob base fd_off %" PRIu64 " + delta %" PRIu64
+              ") exceeds res %u size %zu -- blob under-allocated; guest "
+              "degrades to sync map",
+              aligned_shmem_offset, cmd->size, res->fd_offset, delta,
+              cmd->shmem_res_id, res->size);
       hr = NPT_E_INVALIDARG;
       goto err_unpin;
    }
@@ -267,8 +293,13 @@ npt_heap12_create_from_shmem(struct npt_context *ctx,
       goto err_unpin;
    }
 
+   /* Import at the host-page-aligned window; the import path reads
+    * res->fd_offset + shmem_offset, so hand it the aligned offset. */
+   struct npt_cmd_create_heap_from_shmem aligned_cmd = *cmd;
+   aligned_cmd.shmem_offset = (uint32_t)aligned_shmem_offset;
+
    void *heap = NULL;
-   hr = npt_heap12_open_host_heap(device, res, cmd, &heap);
+   hr = npt_heap12_open_host_heap(device, res, &aligned_cmd, &heap);
    if (NPT_FAILED(hr) || !heap) {
       if (NPT_SUCCEEDED(hr))
          hr = NPT_E_FAIL;
@@ -300,9 +331,13 @@ npt_heap12_create_from_shmem(struct npt_context *ctx,
    npt_context_register_object(ctx, cmd->mint_heap_id, heap,
                                NPT_OBJECT_TYPE_ID3D12HEAP);
 
-   npt_log("create_heap_from_shmem: heap 0x%016" PRIx64 " imports res %u "
-           "(off=%u size=%" PRIu64 " app_type=%u app_flags=0x%x)",
-           cmd->mint_heap_id, cmd->shmem_res_id, cmd->shmem_offset,
+   if (out_aligned_shmem_offset)
+      *out_aligned_shmem_offset = (uint32_t)aligned_shmem_offset;
+
+   npt_log("create_heap_from_shmem: heap 0x%016" PRIx64 " ZERO-COPY imports "
+           "res %u (aligned off=%" PRIu64 " = delta %" PRIu64 ", size=%" PRIu64
+           " app_type=%u app_flags=0x%x)",
+           cmd->mint_heap_id, cmd->shmem_res_id, aligned_shmem_offset, delta,
            cmd->size, cmd->heap_type, cmd->heap_flags);
 
    return NPT_S_OK;
@@ -325,13 +360,16 @@ npt_dispatch_create_heap_from_shmem(struct npt_context *ctx,
    if (npt_cs_decoder_get_fatal(dec))
       return;
 
-   const HRESULT hr = npt_heap12_create_from_shmem(ctx, dec, &cmd);
+   uint32_t aligned_shmem_offset = 0;
+   const HRESULT hr =
+      npt_heap12_create_from_shmem(ctx, dec, &cmd, &aligned_shmem_offset);
 
    if (header->cmd_flags & NPT_CMD_FLAG_REPLY) {
       struct npt_cmd_create_heap_from_shmem_reply reply;
       memset(&reply, 0, sizeof(reply));
       reply.header.cmd_type = header->cmd_type;
       reply.header.cmd_return = (uint32_t)hr;
+      reply.aligned_shmem_offset = aligned_shmem_offset;
       if (npt_cs_encoder_acquire(enc)) {
          npt_cs_encoder_write(enc, sizeof(reply), &reply, sizeof(reply));
          npt_cs_encoder_release(enc);
