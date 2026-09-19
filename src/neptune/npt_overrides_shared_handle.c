@@ -24,6 +24,7 @@
 #include "neptune-protocol/npt_protocol_defs.h"
 #include "neptune-protocol/npt_protocol_host_id3d11device.h"
 #include "neptune-protocol/npt_protocol_host_id3d11fence.h"
+#include "neptune-protocol/npt_protocol_host_idxgifactory.h"
 #include "neptune-protocol/npt_protocol_host_idxgiresource.h"
 
 /* -------------------------------------------------------------------- */
@@ -62,6 +63,23 @@ reject_ID3D11Fence_CreateSharedHandle(
 {
    if (args->pHandle)
       *args->pHandle = (HANDLE)0;
+   args->ret = NPT_E_INVALIDARG;
+   return args->ret;
+}
+
+/* IDXGIFactory2::GetSharedResourceAdapterLuid takes a guest-supplied
+ * shared HANDLE.  It is safe today only because the backend stubs it;
+ * reject it at the wire like every other shared-HANDLE entry point so a
+ * guest handle never reaches a host dereference, whatever the backend
+ * does later. */
+static HRESULT
+reject_IDXGIFactory2_GetSharedResourceAdapterLuid(
+   UNUSED struct npt_dispatch_context *ctx,
+   struct npt_command_IDXGIFactory2_GetSharedResourceAdapterLuid *args,
+   UNUSED PFN_IDXGIFactory2_GetSharedResourceAdapterLuid original)
+{
+   if (args->pLuid)
+      *args->pLuid = (LUID){ 0 };
    args->ret = NPT_E_INVALIDARG;
    return args->ret;
 }
@@ -128,6 +146,11 @@ struct npt_dispatch_idxgiresource_overrides npt_idxgiresource_overrides = {
 
 struct npt_dispatch_idxgiresource1_overrides npt_idxgiresource1_overrides = {
    .CreateSharedHandle = reject_IDXGIResource1_CreateSharedHandle,
+};
+
+struct npt_dispatch_idxgifactory2_overrides npt_idxgifactory2_overrides = {
+   .GetSharedResourceAdapterLuid =
+      reject_IDXGIFactory2_GetSharedResourceAdapterLuid,
 };
 
 struct npt_dispatch_id3d11device_overrides npt_id3d11device_overrides = {

@@ -111,6 +111,7 @@ npt_context_init_dispatch(struct npt_context *ctx)
    d->toplevel_dispatch_overrides = &npt_toplevel_overrides;
    d->idxgiresource_dispatch_overrides = &npt_idxgiresource_overrides;
    d->idxgiresource1_dispatch_overrides = &npt_idxgiresource1_overrides;
+   d->idxgifactory2_dispatch_overrides = &npt_idxgifactory2_overrides;
    d->id3d11device_dispatch_overrides = &npt_id3d11device_overrides;
    d->id3d11device1_dispatch_overrides = &npt_id3d11device1_overrides;
    d->id3d11device5_dispatch_overrides = &npt_id3d11device5_overrides;

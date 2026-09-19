@@ -16,6 +16,7 @@ extern struct npt_dispatch_toplevel_overrides npt_toplevel_overrides;
  * methods; default dispatch handles the rest. */
 extern struct npt_dispatch_idxgiresource_overrides npt_idxgiresource_overrides;
 extern struct npt_dispatch_idxgiresource1_overrides npt_idxgiresource1_overrides;
+extern struct npt_dispatch_idxgifactory2_overrides npt_idxgifactory2_overrides;
 extern struct npt_dispatch_id3d11device_overrides npt_id3d11device_overrides;
 extern struct npt_dispatch_id3d11device1_overrides npt_id3d11device1_overrides;
 extern struct npt_dispatch_id3d11device5_overrides npt_id3d11device5_overrides;
