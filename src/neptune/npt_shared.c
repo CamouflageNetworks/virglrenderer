@@ -106,13 +106,20 @@ npt_shared_export_blob(struct npt_context *ctx, uint64_t texture_id,
    if (!texture_id || !blob_id)
       return NPT_E_INVALIDARG;
 
-   void *texture = npt_context_lookup_object(ctx, NULL, texture_id,
-                                             NPT_OBJECT_TYPE_IUNKNOWN);
+   /* Hold a COM reference for the whole export: the descriptor behind
+    * the shared HANDLE is a POD *inside* this object, and CreateSharedHandle
+    * / GetSharedHandle dereference the object.  A concurrent COM_RELEASE on
+    * another ring would otherwise free it mid-export (UAF, and a dup of a
+    * closed/reused fd).  Released on every exit via `done`. */
+   void *texture = npt_context_lookup_object_acquire(ctx, texture_id,
+                                                     NPT_OBJECT_TYPE_IUNKNOWN);
    if (!texture) {
       npt_log("shared: export: texture id 0x%016" PRIx64 " not found",
               texture_id);
       return NPT_E_INVALIDARG;
    }
+
+   HRESULT ret;
 
    /* Export the texture's shared descriptor: D3D12 resources through
     * the device's CreateSharedHandle, D3D11 textures through
@@ -138,7 +145,8 @@ npt_shared_export_blob(struct npt_context *ctx, uint64_t texture_id,
          npt_com_release(res12);
          npt_log("shared: export: blob_id %" PRIu64 " GetDevice failed",
                  blob_id);
-         return NPT_E_FAIL;
+         ret = NPT_E_FAIL;
+         goto done;
       }
 
       PFN_ID3D12Device_CreateSharedHandle create_shared =
@@ -154,7 +162,8 @@ npt_shared_export_blob(struct npt_context *ctx, uint64_t texture_id,
                                              &dxgi_res)) || !dxgi_res) {
          npt_log("shared: export: blob_id %" PRIu64 " has no IDXGIResource",
                  blob_id);
-         return NPT_E_FAIL;
+         ret = NPT_E_FAIL;
+         goto done;
       }
 
       PFN_IDXGIResource_GetSharedHandle get_shared =
@@ -168,7 +177,8 @@ npt_shared_export_blob(struct npt_context *ctx, uint64_t texture_id,
    if (NPT_FAILED(hr) || !handle) {
       npt_log("shared: export: blob_id %" PRIu64
               " shared-handle export failed (hr=0x%x)", blob_id, hr);
-      return NPT_FAILED(hr) ? hr : NPT_E_FAIL;
+      ret = NPT_FAILED(hr) ? hr : NPT_E_FAIL;
+      goto done;
    }
 
    struct npt_blob_export_info info;
@@ -180,7 +190,8 @@ npt_shared_export_blob(struct npt_context *ctx, uint64_t texture_id,
    if (desc->magic != NPT_DARWIN_SHARED_TEXTURE_MAGIC ||
        desc->version != NPT_DARWIN_SHARED_HANDLE_VERSION || desc->fd < 0) {
       npt_log("shared: export: blob_id %" PRIu64 " bad descriptor", blob_id);
-      return NPT_E_FAIL;
+      ret = NPT_E_FAIL;
+      goto done;
    }
 
    if (!(desc->bind_flags & NPT_D3D11_BIND_SHADER_RESOURCE))
@@ -207,7 +218,8 @@ npt_shared_export_blob(struct npt_context *ctx, uint64_t texture_id,
        desc->planeCount < 1 ||
        desc->planeCount > NPT_BLOB_EXPORT_MAX_PLANES) {
       npt_log("shared: export: blob_id %" PRIu64 " bad descriptor", blob_id);
-      return NPT_E_FAIL;
+      ret = NPT_E_FAIL;
+      goto done;
    }
 
    if (!(desc->meta.BindFlags & NPT_D3D11_BIND_SHADER_RESOURCE))
@@ -239,14 +251,18 @@ npt_shared_export_blob(struct npt_context *ctx, uint64_t texture_id,
    if (!data_res || data_res->fd_type != VIRGL_RESOURCE_FD_SHM ||
        !data_res->u.data) {
       npt_log("shared: export: data resource %u not found", data_res_id);
-      return NPT_E_INVALIDARG;
+      ret = NPT_E_INVALIDARG;
+      goto done;
    }
 
-   /* data_off is guest-supplied: bound the write to the mapping. */
+   /* data_off is guest-supplied: bound the write to the mapping.  data_off
+    * is uint32_t and sizeof(info) a small constant, so the widened sum
+    * cannot overflow uint64_t. */
    if ((uint64_t)data_off + sizeof(info) > data_res->size) {
       npt_log("shared: export: data_off=%u overruns res size=%zu",
               data_off, data_res->size);
-      return NPT_E_INVALIDARG;
+      ret = NPT_E_INVALIDARG;
+      goto done;
    }
    memcpy((uint8_t *)data_res->u.data + data_off, &info, sizeof(info));
 
@@ -256,14 +272,16 @@ npt_shared_export_blob(struct npt_context *ctx, uint64_t texture_id,
    int fd = dup(export_fd);
    if (fd < 0) {
       npt_log("shared: export: blob_id %" PRIu64 " dup failed", blob_id);
-      return NPT_E_FAIL;
+      ret = NPT_E_FAIL;
+      goto done;
    }
    if (!npt_context_register_pending_blob(ctx, blob_id,
                                           NPT_SHARED_FD_TYPE, fd,
                                           export_size,
                                           export_virgl_format)) {
       close(fd);
-      return NPT_E_FAIL;
+      ret = NPT_E_FAIL;
+      goto done;
    }
 
 #ifdef __APPLE__
@@ -276,7 +294,14 @@ npt_shared_export_blob(struct npt_context *ctx, uint64_t texture_id,
            desc->meta.Height, desc->meta.Format, desc->drmFormatModifier,
            desc->planes[0].pitch, ctx->ctx_id);
 #endif
-   return NPT_S_OK;
+   ret = NPT_S_OK;
+
+done:
+   /* Drops the reference taken by npt_context_lookup_object_acquire; the
+    * dup'd fd (and the backend's own dup inside the import path) keep the
+    * underlying object's memory alive independently. */
+   npt_com_release(texture);
+   return ret;
 }
 
 HRESULT
@@ -301,13 +326,19 @@ npt_shared_open_res(struct npt_context *ctx, uint64_t device_id,
    const bool is_d3d12 =
       npt_context_object_is(ctx, device_id, NPT_OBJECT_TYPE_ID3D12DEVICE) &&
       !npt_context_object_is(ctx, device_id, NPT_OBJECT_TYPE_ID3D11DEVICE);
-   void *device = npt_context_lookup_object(
-      ctx, NULL, device_id,
+   /* Hold a COM reference across the import: OpenSharedResource /
+    * OpenSharedHandle dereference the device, and a concurrent
+    * COM_RELEASE of device_id on another ring would otherwise free it
+    * mid-call.  Released on every exit via `done`. */
+   void *device = npt_context_lookup_object_acquire(
+      ctx, device_id,
       is_d3d12 ? NPT_OBJECT_TYPE_ID3D12DEVICE : NPT_OBJECT_TYPE_ID3D11DEVICE);
    if (!device) {
       npt_log("shared: open: device id 0x%016" PRIx64 " not found", device_id);
       return NPT_E_INVALIDARG;
    }
+
+   HRESULT ret;
 
    /* Wait for the attach-forwarded resource.  Same-context opens hit
     * immediately (the blob create recorded it). */
@@ -322,7 +353,8 @@ npt_shared_open_res(struct npt_context *ctx, uint64_t device_id,
    if (!res || res->fd_type != NPT_SHARED_FD_TYPE || res->u.fd < 0) {
       npt_log("shared: open: res_id %u not attached (found=%d type=%d)",
               cmd->res_id, res != NULL, res ? (int)res->fd_type : -1);
-      return NPT_E_INVALIDARG;
+      ret = NPT_E_INVALIDARG;
+      goto done;
    }
 
    /* Rebuild the exporter's descriptor around our own fd reference. */
@@ -375,8 +407,10 @@ npt_shared_open_res(struct npt_context *ctx, uint64_t device_id,
    /* The import dup()s the fd internally; hold our own reference so a
     * concurrent resource destroy can't invalidate res->u.fd mid-call. */
    desc.fd = dup(res->u.fd);
-   if (desc.fd < 0)
-      return NPT_E_FAIL;
+   if (desc.fd < 0) {
+      ret = NPT_E_FAIL;
+      goto done;
+   }
 
    void *texture = NULL;
    HRESULT hr;
@@ -404,7 +438,8 @@ npt_shared_open_res(struct npt_context *ctx, uint64_t device_id,
    if (NPT_FAILED(hr) || !texture) {
       npt_log("shared: open: res_id %u import failed (hr=0x%x)",
               cmd->res_id, hr);
-      return NPT_FAILED(hr) ? hr : NPT_E_FAIL;
+      ret = NPT_FAILED(hr) ? hr : NPT_E_FAIL;
+      goto done;
    }
 
    /* The freshly imported texture carries one reference; the object
@@ -415,5 +450,11 @@ npt_shared_open_res(struct npt_context *ctx, uint64_t device_id,
 
    npt_log("shared: opened res_id=%u -> id 0x%016" PRIx64 " (ctx %u)",
            cmd->res_id, cmd->mint_object_id, ctx->ctx_id);
-   return NPT_S_OK;
+   ret = NPT_S_OK;
+
+done:
+   /* Drops the reference taken by npt_context_lookup_object_acquire; the
+    * imported texture holds its own references to the underlying object. */
+   npt_com_release(device);
+   return ret;
 }

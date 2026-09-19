@@ -428,6 +428,15 @@ npt_context_lookup_object(struct npt_context *ctx,
                           uint64_t id,
                           npt_object_type expected);
 
+/* Like npt_context_lookup_object but takes a COM reference on the result
+ * under the object-table lock, so a concurrent COM_RELEASE on another
+ * ring cannot free the object while the caller uses it.  The caller must
+ * balance every non-NULL return with npt_com_release().  Returns NULL
+ * (never marks the decoder fatal) on miss / type mismatch. */
+void *
+npt_context_lookup_object_acquire(struct npt_context *ctx, uint64_t id,
+                                  npt_object_type expected);
+
 /* COM_RELEASE coordination: drop the feedback entry (if any), unmap
  * the object_table entry, then drop the host-library ref via
  * IUnknown::Release.  Stray RELEASE on an unregistered id is silent. */

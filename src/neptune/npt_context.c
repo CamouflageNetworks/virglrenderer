@@ -434,6 +434,40 @@ npt_context_lookup_object(struct npt_context *ctx,
    return obj;
 }
 
+void *
+npt_context_lookup_object_acquire(struct npt_context *ctx, uint64_t id,
+                                  npt_object_type expected)
+{
+   if (!id || !ctx || !ctx->object_table)
+      return NULL;
+
+   /* Take a COM reference under the same lock that guards the object
+    * table so a concurrent COM_RELEASE on another ring cannot free the
+    * object between the lookup and the caller's use of it (the plain
+    * lookup hands back a borrowed pointer, then drops the lock; the
+    * release path calls IUnknown::Release outside the lock).  The table
+    * entry being present under the lock means the table's own reference
+    * is still live, so the AddRef can never resurrect a zombie.  The
+    * caller balances every non-NULL return with npt_com_release().
+    * Bypasses the decoder lookup cache deliberately -- a cache hit is a
+    * borrowed pointer with no live entry to AddRef against. */
+   const bool permissive = (expected == NPT_OBJECT_TYPE_IUNKNOWN);
+   mtx_lock(&ctx->object_mutex);
+   const struct hash_entry *entry =
+      _mesa_hash_table_search(ctx->object_table, &id);
+   const struct npt_object *obj = entry ? entry->data : NULL;
+   if (!obj && !permissive && npt_ring_current())
+      obj = npt_context_await_object_locked(ctx, id);
+   void *host_ptr = NULL;
+   if (obj && obj->host_ptr &&
+       npt_object_type_is_compatible(obj->type, expected)) {
+      host_ptr = obj->host_ptr;
+      npt_com_add_ref(host_ptr);
+   }
+   mtx_unlock(&ctx->object_mutex);
+   return host_ptr;
+}
+
 void
 npt_context_release_object(struct npt_context *ctx, uint64_t guest_id)
 {
