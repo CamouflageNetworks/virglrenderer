@@ -120,6 +120,7 @@ npt_shared_export_blob(struct npt_context *ctx, uint64_t texture_id,
    }
 
    HRESULT ret;
+   struct npt_resource *data_res = NULL;
 
    /* Export the texture's shared descriptor: D3D12 resources through
     * the device's CreateSharedHandle, D3D11 textures through
@@ -246,8 +247,11 @@ npt_shared_export_blob(struct npt_context *ctx, uint64_t texture_id,
    const uint32_t export_virgl_format =
       npt_shared_dxgi_to_virgl_format(NPT_SHARED_EXPORT_FORMAT(desc));
 
-   /* Publish the export-level facts into the exporter's shmem window. */
-   struct npt_resource *data_res = npt_context_get_resource(ctx, data_res_id);
+   /* Publish the export-level facts into the exporter's shmem window.
+    * Pin it: the memcpy below writes through data_res->u.data, which a
+    * concurrent DESTROY_RESOURCE on another ring would otherwise munmap
+    * and free.  Released in `done`. */
+   data_res = npt_context_pin_resource(ctx, data_res_id);
    if (!data_res || data_res->fd_type != VIRGL_RESOURCE_FD_SHM ||
        !data_res->u.data) {
       npt_log("shared: export: data resource %u not found", data_res_id);
@@ -300,6 +304,8 @@ done:
    /* Drops the reference taken by npt_context_lookup_object_acquire; the
     * dup'd fd (and the backend's own dup inside the import path) keep the
     * underlying object's memory alive independently. */
+   if (data_res)
+      npt_context_unpin_resource(ctx, data_res);
    npt_com_release(texture);
    return ret;
 }
@@ -350,6 +356,13 @@ npt_shared_open_res(struct npt_context *ctx, uint64_t device_id,
       thrd_sleep(&(struct timespec){
                     .tv_nsec = NPT_SHARED_ATTACH_POLL_MS * 1000000L }, NULL);
    }
+   /* Pin it: a concurrent DESTROY_RESOURCE on another ring could free
+    * res and close res->u.fd between the poll above and the dup below.
+    * The pin re-looks-up under resource_mutex (so the borrowed poll
+    * result can't be a dangling pointer here) and defers any free to the
+    * unpin in `done`. */
+   if (res)
+      res = npt_context_pin_resource(ctx, cmd->res_id);
    if (!res || res->fd_type != NPT_SHARED_FD_TYPE || res->u.fd < 0) {
       npt_log("shared: open: res_id %u not attached (found=%d type=%d)",
               cmd->res_id, res != NULL, res ? (int)res->fd_type : -1);
@@ -454,7 +467,10 @@ npt_shared_open_res(struct npt_context *ctx, uint64_t device_id,
 
 done:
    /* Drops the reference taken by npt_context_lookup_object_acquire; the
-    * imported texture holds its own references to the underlying object. */
+    * imported texture holds its own references to the underlying object.
+    * The import dup()s res->u.fd, so the resource can be unpinned here. */
+   if (res)
+      npt_context_unpin_resource(ctx, res);
    npt_com_release(device);
    return ret;
 }

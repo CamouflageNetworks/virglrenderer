@@ -308,6 +308,21 @@ npt_context_get_resource(struct npt_context *ctx, uint32_t res_id)
    return likely(entry) ? entry->data : NULL;
 }
 
+/* Look up a resource and take an import pin (heap_import_count) in one
+ * resource_mutex section, so the borrowed pointer cannot be freed by a
+ * concurrent npt_context_destroy_resource while the caller uses it (the
+ * destroy defers the free to the last unpin).  This is the same pin
+ * npt_heap12 takes; use it for any get_resource->use across which a
+ * destroy could race.  Returns NULL if the resource is not present.
+ * Balance every non-NULL return with npt_context_unpin_resource. */
+struct npt_resource *
+npt_context_pin_resource(struct npt_context *ctx, uint32_t res_id);
+
+/* Drop one import pin, completing the free of a resource that was
+ * destroyed while pinned. */
+void
+npt_context_unpin_resource(struct npt_context *ctx, struct npt_resource *res);
+
 /* Takes ownership of the fd. */
 bool
 npt_context_register_pending_blob(struct npt_context *ctx,

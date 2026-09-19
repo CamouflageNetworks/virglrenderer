@@ -5,6 +5,7 @@
 
 #include "npt_context.h"
 
+#include <assert.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -91,6 +92,37 @@ void
 npt_context_free_detached_resource(struct npt_resource *res)
 {
    npt_resource_free(res);
+}
+
+struct npt_resource *
+npt_context_pin_resource(struct npt_context *ctx, uint32_t res_id)
+{
+   mtx_lock(&ctx->resource_mutex);
+   const struct hash_entry *entry =
+      _mesa_hash_table_search(ctx->resource_table, &res_id);
+   struct npt_resource *res = entry ? entry->data : NULL;
+   if (res)
+      res->heap_import_count++;
+   mtx_unlock(&ctx->resource_mutex);
+
+   return res;
+}
+
+void
+npt_context_unpin_resource(struct npt_context *ctx, struct npt_resource *res)
+{
+   mtx_lock(&ctx->resource_mutex);
+   assert(res->heap_import_count > 0);
+   res->heap_import_count--;
+   const bool free_now = res->zombie && res->heap_import_count == 0;
+   const uint32_t res_id = res->res_id;
+   mtx_unlock(&ctx->resource_mutex);
+
+   if (free_now) {
+      npt_log("resource: last import pin on zombie res %u dropped; "
+              "completing deferred free", res_id);
+      npt_context_free_detached_resource(res);
+   }
 }
 
 /* Overrides are set only where the default dispatcher cannot cope:

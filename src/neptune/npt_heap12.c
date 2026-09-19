@@ -57,23 +57,12 @@ npt_heap12_pin_shm_resource(struct npt_context *ctx, uint32_t res_id)
    return res;
 }
 
-/* Drop one import pin, completing the free of a resource that was
- * destroyed while pinned. */
+/* Drop one import pin.  Thin alias for the shared unpin so heaps and
+ * shared textures use one pin mechanism (heap_import_count + zombie). */
 static void
 npt_heap12_unpin(struct npt_context *ctx, struct npt_resource *res)
 {
-   mtx_lock(&ctx->resource_mutex);
-   assert(res->heap_import_count > 0);
-   res->heap_import_count--;
-   const bool free_now = res->zombie && res->heap_import_count == 0;
-   const uint32_t res_id = res->res_id;
-   mtx_unlock(&ctx->resource_mutex);
-
-   if (free_now) {
-      npt_log("heap12: last import pin on zombie res %u dropped; "
-              "completing deferred munmap", res_id);
-      npt_context_free_detached_resource(res);
-   }
+   npt_context_unpin_resource(ctx, res);
 }
 
 #ifdef __linux__
