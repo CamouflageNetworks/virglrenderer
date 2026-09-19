@@ -318,11 +318,18 @@ npt_feedback_query_poll_one(struct npt_context *ctx,
    if (entry->cookie > NPT_QUERY_FEEDBACK_SLOT_RESULT)
       return false;
 
-   struct npt_resource *res = npt_context_get_resource(ctx, entry->fb_res_id);
+   /* Pin across the GetData + slot write below: slot aliases res->u.data
+    * and a concurrent DESTROY_RESOURCE on another ring could free the
+    * mapping mid-poll (this runs on the dispatch thread; destroy does
+    * not). */
+   struct npt_resource *res = npt_context_pin_resource(ctx, entry->fb_res_id);
    struct npt_query_feedback_slot *slot =
       npt_feedback_slot_ptr(res, entry->fb_offset, sizeof(*slot));
-   if (!slot)
+   if (!slot) {
+      if (res)
+         npt_context_unpin_resource(ctx, res);
       return false;
+   }
 
    /* PIPELINE_STATISTICS is 88 bytes; the slot caps result room. */
    uint8_t scratch[NPT_QUERY_FEEDBACK_SLOT_RESULT];
@@ -336,8 +343,10 @@ npt_feedback_query_poll_one(struct npt_context *ctx,
    HRESULT hr = get_data(entry->host_ctx, entry->host_obj,
                          scratch, entry->cookie,
                          /*D3D11_ASYNC_GETDATA_DONOTFLUSH=*/1);
-   if (hr != 0 /* S_OK */)
+   if (hr != 0 /* S_OK */) {
+      npt_context_unpin_resource(ctx, res);
       return false;
+   }
 
    memcpy(slot->result, scratch, entry->cookie);
    /* Release pairs with the guest's acquire-load on state.  Packing
@@ -345,6 +354,7 @@ npt_feedback_query_poll_one(struct npt_context *ctx,
    const uint64_t state =
       ((uint64_t)entry->version << 32) | NPT_QUERY_FEEDBACK_FLAG_READY;
    atomic_store_explicit(&slot->state, state, memory_order_release);
+   npt_context_unpin_resource(ctx, res);
    return true;
 }
 
@@ -546,11 +556,18 @@ npt_feedback_fence_poll_one(struct npt_context *ctx,
    if (!entry->host_obj || !entry->fb_res_id)
       return false;
 
-   struct npt_resource *res = npt_context_get_resource(ctx, entry->fb_res_id);
+   /* Pin across the fence read + slot write below: slot aliases
+    * res->u.data and a concurrent DESTROY_RESOURCE on another ring could
+    * free the mapping mid-poll.  This poll runs on ring threads, so the
+    * race is real. */
+   struct npt_resource *res = npt_context_pin_resource(ctx, entry->fb_res_id);
    struct npt_d3d11_fence_feedback_slot *slot =
       npt_feedback_slot_ptr(res, entry->fb_offset, sizeof(*slot));
-   if (!slot)
+   if (!slot) {
+      if (res)
+         npt_context_unpin_resource(ctx, res);
       return false;
+   }
 
    /* The substrate poll holds st->mutex across this call so no two
     * threads write the same slot concurrently; the release store
@@ -574,6 +591,7 @@ npt_feedback_fence_poll_one(struct npt_context *ctx,
    }
    atomic_store_explicit(&slot->completed_value, (uint64_t)val,
                          memory_order_release);
+   npt_context_unpin_resource(ctx, res);
 
    /* D3D12 permits Signal to a lower value, and target_value only ever
     * rises, so a rewound fence could never clear it again: latch the
