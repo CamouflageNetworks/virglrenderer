@@ -240,23 +240,29 @@ npt_resource_map(struct npt_context *ctx,
                                     "map_resource"))
       return NPT_E_INVALIDARG;
 
+   /* Pin across the map + copy below: it dereferences shmem_res->u.data
+    * and ->size, and the host Map can block on GPU sync -- a concurrent
+    * DESTROY_RESOURCE on another ring would otherwise free the mapping
+    * mid-call.  Released via `out`. */
    struct npt_resource *shmem_res =
-      npt_context_get_resource(ctx, shmem_res_id);
+      npt_context_pin_resource(ctx, shmem_res_id);
    if (!shmem_res || shmem_res->fd_type != VIRGL_RESOURCE_FD_SHM ||
        !shmem_res->u.data) {
       npt_log("map_resource: invalid SHM resource %u", shmem_res_id);
-      return NPT_E_FAIL;
-   }
-
-   if ((uint64_t)shmem_offset >= shmem_res->size) {
-      npt_log("map_resource: shmem_offset %u exceeds shmem size %zu",
-              shmem_offset, shmem_res->size);
+      if (shmem_res)
+         npt_context_unpin_resource(ctx, shmem_res);
       return NPT_E_FAIL;
    }
 
    D3D11_MAPPED_SUBRESOURCE mapped;
    memset(&mapped, 0, sizeof(mapped));
-   HRESULT hr;
+   HRESULT hr = NPT_E_FAIL;
+
+   if ((uint64_t)shmem_offset >= shmem_res->size) {
+      npt_log("map_resource: shmem_offset %u exceeds shmem size %zu",
+              shmem_offset, shmem_res->size);
+      goto out;
+   }
 
    if (!context_id) {
       /* RowPitch/DepthPitch stay 0: this path serves buffers, and the
@@ -276,14 +282,15 @@ npt_resource_map(struct npt_context *ctx,
                            NPT_VTBL_ID3D12Resource_Map);
       if (!map12) {
          npt_log("map_resource: no D3D12 Map");
-         return NPT_E_FAIL;
+         goto out;
       }
       hr = map12(resource, subresource, rr, &pData);
       if (NPT_FAILED(hr))
-         return hr;
+         goto out;
       if (!pData) {
          npt_log("map_resource: D3D12 Map returned NULL data");
-         return NPT_E_FAIL;
+         hr = NPT_E_FAIL;
+         goto out;
       }
       mapped.pData = pData;
    } else {
@@ -291,7 +298,8 @@ npt_resource_map(struct npt_context *ctx,
                                                 NPT_OBJECT_TYPE_ID3D11DEVICECONTEXT);
       if (!imm_ctx) {
          npt_log("map_resource: NULL immediate context");
-         return NPT_E_FAIL;
+         hr = NPT_E_FAIL;
+         goto out;
       }
 
       D3D11_MAP d3d11_map_type = npt_access_flags_to_d3d11_map(access_flags);
@@ -306,7 +314,7 @@ npt_resource_map(struct npt_context *ctx,
                   d3d11_map_type, api_map_flags, &mapped);
 
       if (NPT_FAILED(hr))
-         return hr;
+         goto out;
    }
 
    /* Memcpy bound for READ (and matching WRITE on the Unmap path):
@@ -343,7 +351,8 @@ npt_resource_map(struct npt_context *ctx,
       entry = npt_sync_map_add(ctx);
       if (!entry) {
          npt_log("map_resource: sync map table OOM");
-         return NPT_E_OUTOFMEMORY;
+         hr = NPT_E_OUTOFMEMORY;
+         goto out;
       }
    }
    *entry = (struct npt_sync_map_entry){
@@ -358,6 +367,9 @@ npt_resource_map(struct npt_context *ctx,
    *out_row_pitch = mapped.RowPitch;
    *out_depth_pitch = mapped.DepthPitch;
    *out_mapped_size = mapped_size;
+
+out:
+   npt_context_unpin_resource(ctx, shmem_res);
    return hr;
 }
 
@@ -380,13 +392,20 @@ npt_resource_unmap(struct npt_context *ctx,
                                     "unmap_resource"))
       return NPT_E_INVALIDARG;
 
+   /* Pin across the copy below: slot_src aliases shmem_res->u.data and a
+    * concurrent DESTROY_RESOURCE on another ring could free the mapping
+    * mid-call.  Released via `out`. */
    struct npt_resource *shmem_res =
-      npt_context_get_resource(ctx, shmem_res_id);
+      npt_context_pin_resource(ctx, shmem_res_id);
    if (!shmem_res || shmem_res->fd_type != VIRGL_RESOURCE_FD_SHM ||
        !shmem_res->u.data) {
       npt_log("unmap_resource: invalid SHM resource %u", shmem_res_id);
+      if (shmem_res)
+         npt_context_unpin_resource(ctx, shmem_res);
       return NPT_E_FAIL;
    }
+
+   HRESULT hr = NPT_E_FAIL;
 
    /* Bounds check the slot window. */
    if ((uint64_t)shmem_offset + byte_size > shmem_res->size) {
@@ -394,7 +413,7 @@ npt_resource_unmap(struct npt_context *ctx,
               "exceeds shmem size %zu",
               shmem_offset, shmem_offset, byte_size,
               shmem_res->size);
-      return NPT_E_FAIL;
+      goto out;
    }
    const uint8_t *slot_src =
       (const uint8_t *)shmem_res->u.data + shmem_offset;
@@ -404,14 +423,15 @@ npt_resource_unmap(struct npt_context *ctx,
        * Map + memcpy + Unmap cycle here. */
       if (!context_id) {
          npt_log("unmap_resource: access_flags path requires context_id");
-         return NPT_E_FAIL;
+         goto out;
       }
 
       void *imm_ctx = npt_context_lookup_object(ctx, NULL, context_id,
                                                  NPT_OBJECT_TYPE_ID3D11DEVICECONTEXT);
       if (!imm_ctx) {
          npt_log("unmap_resource: NULL immediate context");
-         return NPT_E_FAIL;
+         hr = NPT_E_FAIL;
+         goto out;
       }
 
       D3D11_MAP d3d11_map_type =
@@ -428,11 +448,12 @@ npt_resource_unmap(struct npt_context *ctx,
 
       D3D11_MAPPED_SUBRESOURCE mapped;
       memset(&mapped, 0, sizeof(mapped));
-      HRESULT hr = map_fn(imm_ctx, resource, subresource,
-                          d3d11_map_type, 0, &mapped);
+      hr = map_fn(imm_ctx, resource, subresource,
+                  d3d11_map_type, 0, &mapped);
       if (NPT_FAILED(hr)) {
          npt_log("unmap_resource: rename-ring Map failed 0x%08x", hr);
-         return NPT_E_FAIL;
+         hr = NPT_E_FAIL;
+         goto out;
       }
 
       if ((access_flags & NPT_MAP_ACCESS_WRITE) && mapped.pData) {
@@ -443,7 +464,8 @@ npt_resource_unmap(struct npt_context *ctx,
       }
 
       unmap_fn(imm_ctx, resource, subresource);
-      return NPT_S_OK;
+      hr = NPT_S_OK;
+      goto out;
    }
 
    /* Paired with a prior MAP_RESOURCE. */
@@ -452,13 +474,13 @@ npt_resource_unmap(struct npt_context *ctx,
    if (!entry) {
       npt_log("unmap_resource: resource 0x%" PRIx64 " sub %u not mapped",
               resource_id, subresource);
-      return NPT_E_FAIL;
+      goto out;
    }
 
    if (entry->persistent) {
       npt_log("unmap_resource: resource 0x%" PRIx64 " is persistent, "
               "ignoring unmap", resource_id);
-      return NPT_E_FAIL;
+      goto out;
    }
 
    if (entry->access_flags & NPT_MAP_ACCESS_WRITE) {
@@ -485,19 +507,21 @@ npt_resource_unmap(struct npt_context *ctx,
                            NPT_VTBL_ID3D12Resource_Unmap);
       if (!unmap12) {
          npt_log("unmap_resource: no D3D12 Unmap");
-         return NPT_E_FAIL;
+         goto out;
       }
       unmap12(resource, subresource, wr);
 
       npt_sync_map_remove(ctx, entry);
-      return NPT_S_OK;
+      hr = NPT_S_OK;
+      goto out;
    }
 
    void *imm_ctx = npt_context_lookup_object(ctx, NULL, context_id,
                                               NPT_OBJECT_TYPE_ID3D11DEVICECONTEXT);
    if (!imm_ctx) {
       npt_log("unmap_resource: NULL immediate context");
-      return NPT_E_FAIL;
+      hr = NPT_E_FAIL;
+      goto out;
    }
 
    PFN_ID3D11DeviceContext_Unmap unmap_fn =
@@ -507,5 +531,9 @@ npt_resource_unmap(struct npt_context *ctx,
    unmap_fn(imm_ctx, resource, subresource);
 
    npt_sync_map_remove(ctx, entry);
-   return NPT_S_OK;
+   hr = NPT_S_OK;
+
+out:
+   npt_context_unpin_resource(ctx, shmem_res);
+   return hr;
 }
