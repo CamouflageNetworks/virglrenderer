@@ -25,6 +25,7 @@
 
 #include "c11/threads.h"
 #include "util/hash_table.h"
+#include "util/list.h"
 #include "neptune/npt_context.h"
 #include "neptune/npt_shared.h"
 
@@ -94,6 +95,13 @@ minimal_ctx_init(struct npt_context *ctx)
       return false;
    if (mtx_init(&ctx->resource_mutex, mtx_plain) != thrd_success)
       return false;
+   /* npt_context_destroy_resource touches these: an empty ring list and
+    * the encoder's stream lock (with a NULL stream it is a no-op). */
+   if (mtx_init(&ctx->ring_mutex, mtx_plain) != thrd_success)
+      return false;
+   if (mtx_init(&ctx->encoder.mutex, mtx_plain) != thrd_success)
+      return false;
+   list_inithead(&ctx->rings);
    ctx->pending_blob_table =
       _mesa_hash_table_create(NULL, test_hash_u64, test_equal_u64);
    ctx->resource_table =
@@ -114,6 +122,8 @@ minimal_ctx_fini(struct npt_context *ctx)
    hash_table_foreach(ctx->resource_table, entry)
       free(entry->data);
    _mesa_hash_table_destroy(ctx->resource_table, NULL);
+   mtx_destroy(&ctx->encoder.mutex);
+   mtx_destroy(&ctx->ring_mutex);
    mtx_destroy(&ctx->resource_mutex);
    mtx_destroy(&ctx->pending_blob_mutex);
 }
@@ -269,6 +279,38 @@ test_pin_resource_zombie_deferred_free(void)
    return 1;
 }
 
+/* The scenario the pin exists for: pinned code (e.g. an executing command
+ * stream) triggers DESTROY_RESOURCE of its own backing resource on the
+ * real destroy path.  The destroy must detach + zombie + defer (no hang,
+ * no free while pinned); the free happens exactly once at the unpin. */
+static int
+test_pin_then_real_destroy_defers_free(void)
+{
+   struct npt_context ctx;
+   EXPECT(minimal_ctx_init(&ctx));
+
+   struct npt_resource *res = table_insert_resource(&ctx, 12);
+   EXPECT(npt_context_pin_resource(&ctx, 12) == res);
+
+   /* Self-destroy while pinned: detached from the table, marked zombie,
+    * free deferred -- returns without blocking. */
+   npt_context_destroy_resource(&ctx, 12);
+   EXPECT(_mesa_hash_table_num_entries(ctx.resource_table) == 0);
+   EXPECT(res->zombie);
+   EXPECT(res->heap_import_count == 1);
+
+   /* A second destroy of the now-detached id is a no-op: no double free,
+    * no hang. */
+   npt_context_destroy_resource(&ctx, 12);
+   EXPECT(res->heap_import_count == 1);
+
+   /* Dropping the pin completes the deferred free exactly once. */
+   npt_context_unpin_resource(&ctx, res);
+
+   minimal_ctx_fini(&ctx);
+   return 1;
+}
+
 int
 main(void)
 {
@@ -279,6 +321,7 @@ main(void)
    RUN_TEST(test_pending_blob_duplicate_at_cap);
    RUN_TEST(test_pin_resource_refcount);
    RUN_TEST(test_pin_resource_zombie_deferred_free);
+   RUN_TEST(test_pin_then_real_destroy_defers_free);
 
    printf("\n%d/%d tests passed\n", tests_run - tests_failed, tests_run);
    return tests_failed ? EXIT_FAILURE : EXIT_SUCCESS;

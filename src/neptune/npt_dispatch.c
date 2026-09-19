@@ -424,11 +424,21 @@ npt_dispatch_execute_command_stream(struct npt_context *ctx,
       return;
    }
 
-   struct npt_resource *res = npt_context_get_resource(ctx, cmd.res_id);
+   /* Pin the command-stream resource across the whole nested dispatch:
+    * `bytes` aliases res->u.data and is read for the entire loop below,
+    * which may itself dispatch a DESTROY_RESOURCE of this very res (or one
+    * may arrive on another ring).  The pin turns that destroy into a
+    * deferred (zombie) free completed at the unpin here, so the mapping
+    * stays valid until the loop finishes.  Nesting is bounded to one
+    * level by the has_saved_state guard above, so at most one such pin is
+    * held per decoder at a time. */
+   struct npt_resource *res = npt_context_pin_resource(ctx, cmd.res_id);
    if (!res || res->fd_type != VIRGL_RESOURCE_FD_SHM ||
        cmd.size > res->size || cmd.offset > res->size - cmd.size) {
       npt_log("execute_command_stream: invalid resource/range "
               "res=%u offset=%u size=%u", cmd.res_id, cmd.offset, cmd.size);
+      if (res)
+         npt_context_unpin_resource(ctx, res);
       npt_cs_decoder_set_fatal(dec);
       return;
    }
@@ -444,6 +454,7 @@ npt_dispatch_execute_command_stream(struct npt_context *ctx,
    }
 
    npt_cs_decoder_restore_state(dec);
+   npt_context_unpin_resource(ctx, res);
 }
 
 static void
