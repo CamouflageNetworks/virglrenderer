@@ -123,10 +123,14 @@ if with_neptune
       libvirglrenderer_dep,
    ]
 
-   neptune_test_inc = include_directories('../src')
+   neptune_test_inc = [
+      include_directories('../src', '../src/neptune'),
+      inc_mesa, inc_gallium, inc_configuration,
+   ]
 
    neptune_tests = [
       ['test_neptune_init', 'test_neptune_init.c'],
+      ['test_neptune_shared', 'test_neptune_shared.c'],
    ]
 
    # Neptune init forks the render server, so point at the in-tree

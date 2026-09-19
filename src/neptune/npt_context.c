@@ -1350,6 +1350,14 @@ npt_context_create_resource(struct npt_context *ctx,
    }
 }
 
+/* Cap on unclaimed server-staged blobs per context.  A pending blob is
+ * only reclaimed when the guest KMD claims it via RESOURCE_CREATE_BLOB,
+ * so an untrusted guest that loops SHARED_EXPORT_BLOB without ever
+ * claiming would otherwise grow the table (and its dup'd fds) without
+ * bound.  A handful is plenty for any legitimate present pipeline; the
+ * export fails past this and its caller closes the dup'd fd. */
+#define NPT_MAX_PENDING_BLOBS 256u
+
 bool
 npt_context_register_pending_blob(struct npt_context *ctx,
                                   uint64_t blob_id,
@@ -1369,6 +1377,28 @@ npt_context_register_pending_blob(struct npt_context *ctx,
    pb->virgl_format = virgl_format;
 
    mtx_lock(&ctx->pending_blob_mutex);
+
+   /* Re-export of a blob_id the guest never claimed: drop the stale
+    * entry's fd instead of orphaning it -- a bare insert on a duplicate
+    * key would leak the previous entry's dup'd fd and its calloc. */
+   struct hash_entry *existing =
+      _mesa_hash_table_search(ctx->pending_blob_table, &blob_id);
+   if (existing) {
+      struct npt_pending_blob *old = existing->data;
+      if (old->fd >= 0)
+         close(old->fd);
+      free(old);
+      _mesa_hash_table_remove(ctx->pending_blob_table, existing);
+   } else if (_mesa_hash_table_num_entries(ctx->pending_blob_table) >=
+              NPT_MAX_PENDING_BLOBS) {
+      mtx_unlock(&ctx->pending_blob_mutex);
+      npt_log("register_pending_blob: too many unclaimed pending blobs "
+              "(cap %u); rejecting blob_id %" PRIu64,
+              NPT_MAX_PENDING_BLOBS, blob_id);
+      free(pb);
+      return false;
+   }
+
    _mesa_hash_table_insert(ctx->pending_blob_table, &pb->blob_id, pb);
    mtx_unlock(&ctx->pending_blob_mutex);
 
